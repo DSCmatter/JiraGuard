@@ -10,7 +10,7 @@ Deadline for the Codegeist submission is 22 Dec 2026, 12:00 PST. Aim to have the
 
 Ask the repo owner for all three of these before you deploy.
 
-1. Write access to [Psionic-labs/JiraGuard](https://github.com/Psionic-labs/JiraGuard).
+1. Write access to [DSCmatter/JiraGuard](https://github.com/DSCmatter/JiraGuard).
 2. Membership in the Forge developer space named JiraGuard. `forge deploy` fails without it.
 3. Admin on the Jira site `jiraguard.atlassian.net`, if you will install or upgrade the app.
 
@@ -27,7 +27,7 @@ The CLI wants Node.js 22 or 24. A newer Node can print a warning and still run. 
 ## Clone and read
 
 ```bash
-git clone https://github.com/Psionic-labs/JiraGuard.git
+git clone https://github.com/DSCmatter/JiraGuard.git
 cd JiraGuard
 ```
 
