@@ -4,5 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-strip-types --test src/storage/memory.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
   }
 }
