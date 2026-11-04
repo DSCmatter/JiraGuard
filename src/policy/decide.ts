@@ -25,9 +25,13 @@ export type DecisionRequest = {
   project?: string | null;
   issueKey?: string | null;
   fields?: Record<string, Json>;
+  before?: Record<string, Json>;
 };
 
 export function searchProjectJql(policy: PolicyRecord): string {
+  if (policy.allowedProjects.length === 0) {
+    return "id = 0";
+  }
   const names = policy.allowedProjects.map((key) => `"${key}"`).join(", ");
   return `project in (${names})`;
 }
@@ -42,8 +46,8 @@ export function decide(policy: PolicyRecord, request: DecisionRequest): Decision
     };
   }
 
-  const project = projectOf(request);
-  if (request.issueKey && !project) {
+  const project = scopedProject(request);
+  if (project === "deny") {
     return { kind: "deny", reason: "project", agentMessage: PROJECT_DENIAL };
   }
   if (project && !policy.allowedProjects.includes(project)) {
@@ -53,7 +57,7 @@ export function decide(policy: PolicyRecord, request: DecisionRequest): Decision
   if (!WRITE_TOOLS.has(request.tool)) {
     return { kind: "allow" };
   }
-  return writeDecision(policy.writeMode, request.fields);
+  return writeDecision(policy.writeMode, request.fields, request.before);
 }
 
 export async function nextCall(
@@ -76,18 +80,27 @@ export async function nextCall(
   return decide(policy, request);
 }
 
-function projectOf(request: DecisionRequest): string | null {
-  if (request.project) {
-    return request.project;
-  }
-  if (!request.issueKey) {
-    return null;
-  }
-  const match = /^([A-Z][A-Z0-9_]+)-\d+$/.exec(request.issueKey);
+function issueProject(issueKey: string): string | null {
+  const match = /^([A-Z][A-Z0-9_]+)-\d+$/.exec(issueKey);
   return match ? match[1] : null;
 }
 
-function writeDecision(mode: WriteMode, fields: Record<string, Json> | undefined): Decision {
+function scopedProject(request: DecisionRequest): string | null | "deny" {
+  const fromKey = request.issueKey ? issueProject(request.issueKey) : null;
+  if (request.issueKey && !fromKey) {
+    return "deny";
+  }
+  if (fromKey && request.project && fromKey !== request.project) {
+    return "deny";
+  }
+  return fromKey ?? request.project ?? null;
+}
+
+function writeDecision(
+  mode: WriteMode,
+  fields: Record<string, Json> | undefined,
+  before: Record<string, Json> | undefined,
+): Decision {
   switch (mode) {
     case "deny":
       return {
@@ -98,7 +111,11 @@ function writeDecision(mode: WriteMode, fields: Record<string, Json> | undefined
     case "approve":
       return {
         kind: "needs_approval",
-        diff: Object.entries(fields ?? {}).map(([field, after]) => ({ field, before: null, after })),
+        diff: Object.entries(fields ?? {}).map(([field, after]) => ({
+          field,
+          before: before && field in before ? before[field] : null,
+          after,
+        })),
       };
     case "allow":
       return { kind: "allow" };

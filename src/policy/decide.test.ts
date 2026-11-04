@@ -67,7 +67,12 @@ describe("decide", () => {
     {
       name: "write approve",
       policy: policy({ writeMode: "approve" }),
-      request: { tool: "jira_add_comment", issueKey: "PROJ-1", fields: { body: "hello" } },
+      request: {
+        tool: "jira_add_comment",
+        issueKey: "PROJ-1",
+        fields: { body: "hello" },
+        before: { body: "old" },
+      },
       kind: "needs_approval",
     },
     {
@@ -93,7 +98,32 @@ describe("decide", () => {
 
   it("limits search to the allowed projects", () => {
     assert.equal(searchProjectJql(policy({ allowedProjects: ["PROJ"] })), 'project in ("PROJ")');
-    assert.equal(searchProjectJql(policy({ allowedProjects: [] })), "project in ()");
+    assert.equal(searchProjectJql(policy({ allowedProjects: [] })), "id = 0");
+  });
+
+  it("rejects an allowed project paired with another project's issue", () => {
+    const decision = decide(policy({ writeMode: "allow" }), {
+      tool: "jira_add_comment",
+      project: "PROJ",
+      issueKey: "DOCS-9",
+    });
+    assert.equal(decision.kind, "deny");
+    if (decision.kind === "deny") {
+      assert.equal(decision.agentMessage, OPAQUE);
+    }
+  });
+
+  it("shows the previous field value on an approval diff", () => {
+    const decision = decide(policy({ allowedTools: ["jira_update_fields"] }), {
+      tool: "jira_update_fields",
+      issueKey: "PROJ-1",
+      fields: { labels: ["release-blocker"] },
+      before: { labels: ["old"] },
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "labels", before: ["old"], after: ["release-blocker"] }],
+    });
   });
 
   it("denies a revoked token before deciding", async () => {
