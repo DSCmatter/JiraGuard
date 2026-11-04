@@ -46,6 +46,8 @@ export type PolicyRecord = {
   injectionMode: InjectionMode;
 };
 
+export type Json = null | string | number | boolean | Json[] | { [key: string]: Json };
+
 export type AuditEvent = {
   id: string;
   ts: string;
@@ -55,23 +57,23 @@ export type AuditEvent = {
   project: string | null;
   outcome: AuditOutcome;
   reason: string | null;
-  before: Record<string, string> | null;
-  after: Record<string, string> | null;
+  before: Record<string, Json> | null;
+  after: Record<string, Json> | null;
   injectionFlagged: boolean;
   requestId: string;
 };
 
 export type FieldDiff = {
   field: string;
-  before: string | null;
-  after: string | null;
+  before: Json;
+  after: Json;
 };
 
 export type PendingAction = {
   id: string;
   agentId: string;
   tool: string;
-  args: Record<string, string>;
+  args: Record<string, Json>;
   issueKey: string;
   diff: FieldDiff[];
   status: PendingStatus;

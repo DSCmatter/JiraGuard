@@ -59,8 +59,8 @@ describe("agent records", () => {
       project: "PROJ",
       outcome: "allowed",
       reason: null,
-      before: null,
-      after: { summary: "Ship the guard" },
+      before: { labels: ["old"] },
+      after: { labels: ["release-blocker"], priority: { name: "High" } },
       injectionFlagged: false,
       requestId: "req_1",
     });
@@ -85,9 +85,9 @@ describe("agent records", () => {
     const action = await store.createPending({
       agentId: "agt_1",
       tool: "jira_add_comment",
-      args: { issueKey: "PROJ-1", body: "hello" },
+      args: { issueKey: "PROJ-1", accountId: null, fields: { labels: ["release-blocker"] } },
       issueKey: "PROJ-1",
-      diff: [{ field: "comment", before: null, after: "hello" }],
+      diff: [{ field: "labels", before: ["old"], after: ["release-blocker"] }],
     });
     assert.equal(action.status, "pending");
     assert.equal(action.decidedBy, null);
