@@ -32,7 +32,7 @@ These hold on every phase.
 
 ## Starting state
 
-The repo contains planning docs, `README.md`, `LICENSE`, and `.gitignore`. There is no `manifest.yml`, `package.json`, or `src/`. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
+Phase 0 is done. The throwaway Forge app is `spike/mcp-webtrigger`, and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 10. A person joining the repo follows [docs/COLLABORATING.md](docs/COLLABORATING.md). Start implementation at Phase 1. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
 
 Two facts need a human:
 

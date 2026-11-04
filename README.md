@@ -98,7 +98,7 @@ List every library, its source and license here, plus any AI tools used in devel
 
 ## Docs
 
-- [PRD](PRD.md) · [Architecture](ARCHITECTURE.md) · [MCP Tool Spec](MCP_TOOL_SPEC.md) · [Requirements Check](REQUIREMENTS_CHECK.md) · [Submission draft](SUBMISSION.md)
+- [Collaborate](docs/COLLABORATING.md) · [Plan](PLAN.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md) · [MCP Tool Spec](docs/MCP_TOOL_SPEC.md) · [Requirements Check](docs/REQUIREMENTS_CHECK.md) · [Submission draft](docs/SUBMISSION.md)
 
 
 - site url from atlassian: `https://jiraguard.atlassian.net/wiki/spaces/~712020ee715c8e61f84c38b855d0f46ceac863/pages/edit-v2/294914?draftShareId=4260e79e-fe64-40e2-88f0-bd717a3bc5c4&createdWithTemplate=true`
