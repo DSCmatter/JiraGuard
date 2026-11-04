@@ -1,0 +1,4 @@
+node_modules/
+.spike-token
+.spike-token-hash
+.webtrigger-url

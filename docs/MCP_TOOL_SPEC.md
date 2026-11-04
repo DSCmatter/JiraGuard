@@ -80,6 +80,6 @@ Separate **security evaluations** (adversarial cases from ARCHITECTURE §8) shou
 
 ## Implementation notes
 
-- TypeScript with the current stable MCP TypeScript SDK (v2: `@modelcontextprotocol/server`), Zod schemas, stateless JSON transport. **[VERIFY]** the SDK runs within the Forge runtime; if not, implement minimal JSON-RPC handling (`initialize`, `tools/list`, `tools/call`) directly, which is small and sufficient.
+- TypeScript with the current stable MCP TypeScript SDK (v2: `@modelcontextprotocol/server`), Zod schemas, stateless JSON transport. The 4 Nov 2026 spike loaded `@modelcontextprotocol/server` 2.4.0 inside a Forge function. The spike handler was hand-written JSON-RPC, not the SDK transport. Zod was not included.
 - Test with MCP Inspector before testing with real clients.
 - Keep tool descriptions short; agents choose tools from them.

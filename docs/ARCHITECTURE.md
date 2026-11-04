@@ -1,6 +1,6 @@
 # JiraGuard Architecture
 
-> Status: Draft v0.1. Items marked **[VERIFY]** are assumptions to confirm against current Forge docs in the week-1 spike. Do not treat them as facts.
+> Status: Draft v0.2. The 4 Nov 2026 spike measured hosting, `asApp()` attribution, and storage. Items still marked **[VERIFY]** were not exercised.
 
 ## 1. Context and Goals
 
@@ -16,7 +16,7 @@ AI agents reach Jira through MCP. JiraGuard is a Forge app that sits between age
         │  Authorization: Bearer <agent token>
         ▼
  ┌───────────────────────── Forge app: JiraGuard ─────────────────────────┐
- │ MCP endpoint (webtrigger [VERIFY])                                     │
+ │ MCP endpoint (webtrigger, measured)                                    │
  │   1. authenticate token → agent                                        │
  │   2. policy engine   → allow / deny / needs_approval                   │
  │   3. tool executor   → Jira REST via asApp()                           │
@@ -48,10 +48,10 @@ Fail closed: if policy or audit storage cannot be read/written, the call is deni
 
 | # | Decision | Why | Trade-off |
 |---|---|---|---|
-| D1 | Run entirely on Forge | Data stays in Atlassian; matches hackathon requirement; no infra to run | Constrained runtime, storage and execution time limits **[VERIFY]** |
+| D1 | Run entirely on Forge | Data stays in Atlassian; matches hackathon requirement; no infra to run | Webtrigger runtime limit is 55 seconds in the Forge invocation docs. This spike did not run a function until the platform stopped it. A JSON body of about 6 MB returned HTTP 413 Payload Too Large. The docs cap a request payload at 5 MB. |
 | D2 | Stateless JSON over HTTP (no sessions/streaming) | Simplest to host on a serverless runtime; recommended for remote MCP servers | No server-initiated notifications |
 | D3 | Per-agent bearer tokens, stored as SHA-256 hashes, shown once | Individual identity and instant revocation | Token handling is on the admin/dev; no OAuth per human in v1 |
-| D4 | Jira calls made with `asApp()` | Webtrigger calls have no Atlassian user context **[VERIFY]** | Jira's own history attributes changes to the app. **Mitigation:** JiraGuard audit log is the source of truth; writes can append "via agent <name>" attribution |
+| D4 | Jira calls made with `asApp()` | A webtrigger has no Atlassian user. On 4 Nov 2026 `asApp()` created SPIKE-1 and a comment on jiraguard.atlassian.net. The comment author was `jiraguard-spike` with `accountType` `app`. | Jira's own history attributes changes to the app. **Mitigation:** JiraGuard audit log is the source of truth; writes can append "via agent <name>" attribution |
 | D5 | Deterministic policy (allow-lists, modes) rather than LLM judging | Explainable, testable, cannot be talked out of a decision | Less flexible than semantic rules |
 | D6 | Heuristic injection scanner with three modes (annotate/redact/block) | Visible, configurable risk reduction | Not a guarantee; attackers can evade patterns |
 | D7 | Policy narrows, never widens, the app's scopes | App scopes are the ceiling set at install | App must request broad enough scopes; admin consent screen shows them |
@@ -82,7 +82,7 @@ Fail closed: if policy or audit storage cannot be read/written, the call is deni
 **pending_action**
 `id, agentId, tool, args, issueKey, diff, status (pending|approved|rejected|expired), createdAt, decidedBy?, decidedAt?`
 
-**Indexes needed:** audit by (agentId, ts), by outcome, by issueKey; pending by status. **[VERIFY]** how Forge storage queries and indexes are defined and what size limits apply; if volume is a concern, store compact events and cap retention (e.g., 30 days, configurable).
+**Indexes.** Audit needs lookup by agent and time, by outcome, and by issue. Pending actions need lookup by status. Custom entities are how Forge defines those indexes. The spike declared entity `spike-event` with index `by-agent-ts` (partition `agentId`, range `ts`). `forge storage entities indexes list` showed that index ACTIVE, plus the default `by-key` index. A set with `ts` set to `Date.now()` failed with `Data type for property "ts" is defined as "integer"`. A set with `ts` set to `1` succeeded, and the index query returned one row. Key-value storage also round-tripped one small object, and `kvs.query().limit(5)` returned it. A value of 256011 characters failed with `should be at most 245760 characters` (240 KiB). The Forge docs add these caps, which this spike did not try to break: 20 entities per app, 50 attributes per entity, 7 custom indexes per entity, partition values at most 1700 bytes, range values at most 900 bytes. Keep audit events small and cap retention.
 
 ## 5. Security and Threat Model
 
@@ -113,7 +113,9 @@ If the scanner flags patterns (e.g., "ignore previous instructions", requests to
 - **Audit:** table with filters (agent, outcome, date, injection flagged), detail drawer, revert (P1), export (P1).
 - **Alerts (P1):** anomaly list.
 
-## 7. Manifest Sketch (illustrative, **[VERIFY]** against the current manifest reference)
+## 7. Manifest sketch
+
+The spike deployed a webtrigger with `urlFormat: v2`, `response.type: dynamic`, and `request.authentication: none`. The platform does not authenticate that URL. The handler checks `Authorization: Bearer`. Install accepted `read:jira-work`, `write:jira-work`, and `storage:app`. The spike later added `manage:jira-configuration` only because the site had no project to comment on. The product app does not need that scope unless it creates projects. The admin page module below is still **[VERIFY]**. The spike did not deploy one.
 
 ```yaml
 modules:
@@ -150,6 +152,14 @@ permissions:
 - **Core test cases (for the demo):** (1) agent reads allowed project and comments; (2) agent write under `approve` is held, then approved and executed.
 - **Edge case:** malicious comment attempts to make the agent reassign an issue; guard flags it and the write is held for approval.
 
-## 9. Open Items
+## 9. Open items
 
-Tracked in PRD §7. The blocking spike (week 1): confirm endpoint hosting and auth on Forge, `asApp()` write behavior, and storage limits.
+PRD §7 still tracks the non-blocking questions. The hosting spike is done. See the measurements below.
+
+## 10. Spike measurements, 4 Nov 2026
+
+The throwaway app is `spike/mcp-webtrigger`, Forge app `jiraguard-spike`, installed on `jiraguard.atlassian.net`. MCP Inspector `--cli --transport http` exited 0 for `initialize`, `tools/list`, and `tools/call` of `guard_whoami`. Responses were `application/json`. No `Mcp-Session-Id` was required. The same `initialize` without a bearer token returned HTTP 401 and `401: missing, invalid or revoked agent token.` Inspector negotiated protocol version `2025-11-25`.
+
+`@modelcontextprotocol/server` 2.4.0 loaded inside the Forge function (`sdk.loaded: true`). The handler did not use the SDK transport. It implemented `initialize`, `tools/list`, and `tools/call` directly.
+
+The site had no Jira projects. Creating one required `manage:jira-configuration`. After that scope was installed, `asApp()` created project SPIKE and issue SPIKE-1, then posted a comment whose author was the app.
