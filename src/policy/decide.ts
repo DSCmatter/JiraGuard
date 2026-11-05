@@ -47,7 +47,7 @@ export function decide(policy: PolicyRecord, request: DecisionRequest): Decision
   }
 
   const project = scopedProject(request);
-  if (project === "deny") {
+  if (project === "deny" || (request.tool === "jira_create_issue" && !project)) {
     return { kind: "deny", reason: "project", agentMessage: PROJECT_DENIAL };
   }
   if (project && !policy.allowedProjects.includes(project)) {
@@ -85,15 +85,34 @@ function issueProject(issueKey: string): string | null {
   return match ? match[1] : null;
 }
 
+function fieldProject(fields: Record<string, Json> | undefined): string | null | "deny" {
+  if (!fields || !("project" in fields)) {
+    return null;
+  }
+  const value = fields.project;
+  if (typeof value === "string") {
+    return /^[A-Z][A-Z0-9_]+$/.test(value) ? value : "deny";
+  }
+  if (value && typeof value === "object" && !Array.isArray(value) && typeof value.key === "string") {
+    return /^[A-Z][A-Z0-9_]+$/.test(value.key) ? value.key : "deny";
+  }
+  return "deny";
+}
+
 function scopedProject(request: DecisionRequest): string | null | "deny" {
   const fromKey = request.issueKey ? issueProject(request.issueKey) : null;
+  const fromFields = fieldProject(request.fields);
   if (request.issueKey && !fromKey) {
     return "deny";
   }
-  if (fromKey && request.project && fromKey !== request.project) {
+  if (fromFields === "deny") {
     return "deny";
   }
-  return fromKey ?? request.project ?? null;
+  const named = [fromKey, request.project ?? null, fromFields].filter((item): item is string => item !== null);
+  if (named.some((item) => item !== named[0])) {
+    return "deny";
+  }
+  return named[0] ?? null;
 }
 
 function writeDecision(
