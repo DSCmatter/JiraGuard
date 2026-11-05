@@ -126,6 +126,34 @@ describe("decide", () => {
     });
   });
 
+  it("denies a create whose project is only inside fields", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { project: { key: "OTHER" }, summary: "Leak" },
+    });
+    assert.equal(decision.kind, "deny");
+    if (decision.kind === "deny") {
+      assert.equal(decision.agentMessage, OPAQUE);
+      assert.equal(decision.agentMessage.includes("OTHER"), false);
+    }
+  });
+
+  it("denies a create that names no project", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { summary: "Nowhere" },
+    });
+    assert.equal(decision.kind, "deny");
+  });
+
+  it("allows a create in an allowed project supplied inside fields", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { project: { key: "PROJ" }, summary: "In scope" },
+    });
+    assert.equal(decision.kind, "allow");
+  });
+
   it("denies a revoked token before deciding", async () => {
     const store = createMemoryStore();
     const saved = await store.createPolicy({
