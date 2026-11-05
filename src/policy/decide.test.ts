@@ -154,6 +154,62 @@ describe("decide", () => {
     assert.equal(decision.kind, "allow");
   });
 
+  it("keeps a breakout project key out of the search scope", () => {
+    const injected = 'PROJ") OR project = "SECRET" OR project in ("PROJ';
+    assert.equal(searchProjectJql(policy({ allowedProjects: [injected] })), "id = 0");
+    assert.equal(
+      searchProjectJql(policy({ allowedProjects: ["PROJ", injected] })),
+      'project in ("PROJ")',
+    );
+  });
+
+  it("shows a comment body on the approval diff", () => {
+    const decision = decide(policy(), {
+      tool: "jira_add_comment",
+      issueKey: "PROJ-1",
+      body: "hello",
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "body", before: null, after: "hello" }],
+    });
+  });
+
+  it("shows a transition on the approval diff", () => {
+    const byId = decide(policy({ allowedTools: ["jira_transition_issue"] }), {
+      tool: "jira_transition_issue",
+      issueKey: "PROJ-1",
+      transitionId: "31",
+    });
+    assert.deepEqual(byId, {
+      kind: "needs_approval",
+      diff: [{ field: "transitionId", before: null, after: "31" }],
+    });
+    const byStatus = decide(policy({ allowedTools: ["jira_transition_issue"] }), {
+      tool: "jira_transition_issue",
+      issueKey: "PROJ-1",
+      toStatus: "Done",
+      before: { toStatus: "To Do" },
+    });
+    assert.deepEqual(byStatus, {
+      kind: "needs_approval",
+      diff: [{ field: "toStatus", before: "To Do", after: "Done" }],
+    });
+  });
+
+  it("shows an assignment on the approval diff", () => {
+    const decision = decide(policy({ allowedTools: ["jira_assign_issue"] }), {
+      tool: "jira_assign_issue",
+      issueKey: "PROJ-1",
+      accountId: null,
+      before: { accountId: "acct-1" },
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "accountId", before: "acct-1", after: null }],
+    });
+  });
+
   it("denies a revoked token before deciding", async () => {
     const store = createMemoryStore();
     const saved = await store.createPolicy({

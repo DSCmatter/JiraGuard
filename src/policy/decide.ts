@@ -26,6 +26,10 @@ export type DecisionRequest = {
   issueKey?: string | null;
   fields?: Record<string, Json>;
   before?: Record<string, Json>;
+  body?: string;
+  transitionId?: string;
+  toStatus?: string;
+  accountId?: string | null;
 };
 
 export function searchProjectJql(policy: PolicyRecord): string {
