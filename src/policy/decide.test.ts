@@ -1,0 +1,238 @@
+import assert from "node:assert/strict";
+import { describe, it } from "node:test";
+import { registerAgent, revokeAgent } from "../auth/token.ts";
+import type { PolicyRecord, WriteMode } from "../domain/records.ts";
+import { createMemoryStore } from "../storage/memory.ts";
+import { decide, nextCall, searchProjectJql, type DecisionRequest } from "./decide.ts";
+
+const OPAQUE =
+  "Denied: that issue is not available to this agent. Use jira_search_issues to find issues you can access.";
+
+function policy(overrides: Partial<PolicyRecord> = {}): PolicyRecord {
+  return {
+    id: "pol_1",
+    allowedTools: ["guard_whoami", "jira_get_issue", "jira_search_issues", "jira_add_comment"],
+    allowedProjects: ["PROJ"],
+    writeMode: "approve",
+    fieldAllowList: ["labels", "priority"],
+    rateLimit: { reads: 120, writes: 20, windowSeconds: 3600 },
+    maxResults: 25,
+    injectionMode: "annotate",
+    ...overrides,
+  };
+}
+
+describe("decide", () => {
+  const cases: Array<{ name: string; policy: PolicyRecord; request: DecisionRequest; kind: string; message?: string }> = [
+    {
+      name: "allowed project",
+      policy: policy(),
+      request: { tool: "jira_get_issue", issueKey: "PROJ-1" },
+      kind: "allow",
+    },
+    {
+      name: "other project",
+      policy: policy(),
+      request: { tool: "jira_get_issue", issueKey: "DOCS-9" },
+      kind: "deny",
+      message: OPAQUE,
+    },
+    {
+      name: "tool missing",
+      policy: policy(),
+      request: { tool: "jira_transition_issue", issueKey: "PROJ-1" },
+      kind: "deny",
+      message:
+        "Denied: this agent is not allowed to use jira_transition_issue. Allowed tools: guard_whoami, jira_get_issue, jira_search_issues, jira_add_comment. Call guard_whoami for full details.",
+    },
+    {
+      name: "empty tool list",
+      policy: policy({ allowedTools: [] }),
+      request: { tool: "jira_get_issue", issueKey: "PROJ-1" },
+      kind: "deny",
+    },
+    {
+      name: "empty project list",
+      policy: policy({ allowedProjects: [] }),
+      request: { tool: "jira_get_issue", issueKey: "PROJ-1" },
+      kind: "deny",
+      message: OPAQUE,
+    },
+    {
+      name: "write deny",
+      policy: policy({ writeMode: "deny" satisfies WriteMode }),
+      request: { tool: "jira_add_comment", issueKey: "PROJ-1" },
+      kind: "deny",
+    },
+    {
+      name: "write approve",
+      policy: policy({ writeMode: "approve" }),
+      request: {
+        tool: "jira_add_comment",
+        issueKey: "PROJ-1",
+        fields: { body: "hello" },
+        before: { body: "old" },
+      },
+      kind: "needs_approval",
+    },
+    {
+      name: "write allow",
+      policy: policy({ writeMode: "allow" }),
+      request: { tool: "jira_add_comment", issueKey: "PROJ-1" },
+      kind: "allow",
+    },
+  ];
+
+  for (const item of cases) {
+    it(item.name, () => {
+      const decision = decide(item.policy, item.request);
+      assert.equal(decision.kind, item.kind);
+      if (item.message && decision.kind === "deny") {
+        assert.equal(decision.agentMessage, item.message);
+      }
+      if (item.name === "other project" && decision.kind === "deny") {
+        assert.equal(decision.agentMessage.includes("DOCS"), false);
+      }
+    });
+  }
+
+  it("limits search to the allowed projects", () => {
+    assert.equal(searchProjectJql(policy({ allowedProjects: ["PROJ"] })), 'project in ("PROJ")');
+    assert.equal(searchProjectJql(policy({ allowedProjects: [] })), "id = 0");
+  });
+
+  it("rejects an allowed project paired with another project's issue", () => {
+    const decision = decide(policy({ writeMode: "allow" }), {
+      tool: "jira_add_comment",
+      project: "PROJ",
+      issueKey: "DOCS-9",
+    });
+    assert.equal(decision.kind, "deny");
+    if (decision.kind === "deny") {
+      assert.equal(decision.agentMessage, OPAQUE);
+    }
+  });
+
+  it("shows the previous field value on an approval diff", () => {
+    const decision = decide(policy({ allowedTools: ["jira_update_fields"] }), {
+      tool: "jira_update_fields",
+      issueKey: "PROJ-1",
+      fields: { labels: ["release-blocker"] },
+      before: { labels: ["old"] },
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "labels", before: ["old"], after: ["release-blocker"] }],
+    });
+  });
+
+  it("denies a create whose project is only inside fields", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { project: { key: "OTHER" }, summary: "Leak" },
+    });
+    assert.equal(decision.kind, "deny");
+    if (decision.kind === "deny") {
+      assert.equal(decision.agentMessage, OPAQUE);
+      assert.equal(decision.agentMessage.includes("OTHER"), false);
+    }
+  });
+
+  it("denies a create that names no project", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { summary: "Nowhere" },
+    });
+    assert.equal(decision.kind, "deny");
+  });
+
+  it("allows a create in an allowed project supplied inside fields", () => {
+    const decision = decide(policy({ allowedTools: ["jira_create_issue"], writeMode: "allow" }), {
+      tool: "jira_create_issue",
+      fields: { project: { key: "PROJ" }, summary: "In scope" },
+    });
+    assert.equal(decision.kind, "allow");
+  });
+
+  it("keeps a breakout project key out of the search scope", () => {
+    const injected = 'PROJ") OR project = "SECRET" OR project in ("PROJ';
+    assert.equal(searchProjectJql(policy({ allowedProjects: [injected] })), "id = 0");
+    assert.equal(
+      searchProjectJql(policy({ allowedProjects: ["PROJ", injected] })),
+      'project in ("PROJ")',
+    );
+  });
+
+  it("shows a comment body on the approval diff", () => {
+    const decision = decide(policy(), {
+      tool: "jira_add_comment",
+      issueKey: "PROJ-1",
+      body: "hello",
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "body", before: null, after: "hello" }],
+    });
+  });
+
+  it("shows a transition on the approval diff", () => {
+    const byId = decide(policy({ allowedTools: ["jira_transition_issue"] }), {
+      tool: "jira_transition_issue",
+      issueKey: "PROJ-1",
+      transitionId: "31",
+    });
+    assert.deepEqual(byId, {
+      kind: "needs_approval",
+      diff: [{ field: "transitionId", before: null, after: "31" }],
+    });
+    const byStatus = decide(policy({ allowedTools: ["jira_transition_issue"] }), {
+      tool: "jira_transition_issue",
+      issueKey: "PROJ-1",
+      toStatus: "Done",
+      before: { toStatus: "To Do" },
+    });
+    assert.deepEqual(byStatus, {
+      kind: "needs_approval",
+      diff: [{ field: "toStatus", before: "To Do", after: "Done" }],
+    });
+  });
+
+  it("shows an assignment on the approval diff", () => {
+    const decision = decide(policy({ allowedTools: ["jira_assign_issue"] }), {
+      tool: "jira_assign_issue",
+      issueKey: "PROJ-1",
+      accountId: null,
+      before: { accountId: "acct-1" },
+    });
+    assert.deepEqual(decision, {
+      kind: "needs_approval",
+      diff: [{ field: "accountId", before: "acct-1", after: null }],
+    });
+  });
+
+  it("denies a revoked token before deciding", async () => {
+    const store = createMemoryStore();
+    const saved = await store.createPolicy({
+      allowedTools: ["jira_get_issue"],
+      allowedProjects: ["PROJ"],
+      writeMode: "allow",
+      fieldAllowList: [],
+      rateLimit: { reads: 1, writes: 1, windowSeconds: 60 },
+      maxResults: 10,
+      injectionMode: "annotate",
+    });
+    const { agent, token } = await registerAgent(store, {
+      name: "triager",
+      description: "",
+      created_by: "admin",
+      policy_id: saved.id,
+    });
+    await revokeAgent(store, agent.id);
+    const decision = await nextCall(store, token, { tool: "jira_get_issue", issueKey: "PROJ-1" });
+    assert.deepEqual(decision, {
+      kind: "deny",
+      reason: "auth",
+      agentMessage: "401: missing, invalid or revoked agent token.",
+    });
+  });
+});
