@@ -15,6 +15,8 @@ const PROJECT_DENIAL =
 
 const AUTH_DENIAL = "401: missing, invalid or revoked agent token.";
 
+const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
+
 export type Decision =
   | { kind: "allow" }
   | { kind: "deny"; reason: string; agentMessage: string }
@@ -33,10 +35,11 @@ export type DecisionRequest = {
 };
 
 export function searchProjectJql(policy: PolicyRecord): string {
-  if (policy.allowedProjects.length === 0) {
+  const keys = policy.allowedProjects.filter((key) => PROJECT_KEY.test(key));
+  if (keys.length === 0) {
     return "id = 0";
   }
-  const names = policy.allowedProjects.map((key) => `"${key}"`).join(", ");
+  const names = keys.map((key) => `"${key}"`).join(", ");
   return `project in (${names})`;
 }
 
@@ -61,7 +64,7 @@ export function decide(policy: PolicyRecord, request: DecisionRequest): Decision
   if (!WRITE_TOOLS.has(request.tool)) {
     return { kind: "allow" };
   }
-  return writeDecision(policy.writeMode, request.fields, request.before);
+  return writeDecision(policy.writeMode, request);
 }
 
 export async function nextCall(
@@ -95,10 +98,10 @@ function fieldProject(fields: Record<string, Json> | undefined): string | null |
   }
   const value = fields.project;
   if (typeof value === "string") {
-    return /^[A-Z][A-Z0-9_]+$/.test(value) ? value : "deny";
+    return PROJECT_KEY.test(value) ? value : "deny";
   }
   if (value && typeof value === "object" && !Array.isArray(value) && typeof value.key === "string") {
-    return /^[A-Z][A-Z0-9_]+$/.test(value.key) ? value.key : "deny";
+    return PROJECT_KEY.test(value.key) ? value.key : "deny";
   }
   return "deny";
 }
@@ -119,11 +122,24 @@ function scopedProject(request: DecisionRequest): string | null | "deny" {
   return named[0] ?? null;
 }
 
-function writeDecision(
-  mode: WriteMode,
-  fields: Record<string, Json> | undefined,
-  before: Record<string, Json> | undefined,
-): Decision {
+function proposedChanges(request: DecisionRequest): Array<[string, Json]> {
+  const changes: Array<[string, Json]> = Object.entries(request.fields ?? {});
+  if (request.body !== undefined) {
+    changes.push(["body", request.body]);
+  }
+  if (request.transitionId !== undefined) {
+    changes.push(["transitionId", request.transitionId]);
+  }
+  if (request.toStatus !== undefined) {
+    changes.push(["toStatus", request.toStatus]);
+  }
+  if (request.accountId !== undefined) {
+    changes.push(["accountId", request.accountId]);
+  }
+  return changes;
+}
+
+function writeDecision(mode: WriteMode, request: DecisionRequest): Decision {
   switch (mode) {
     case "deny":
       return {
@@ -131,15 +147,17 @@ function writeDecision(
         reason: "write_mode",
         agentMessage: "Denied: this agent is not allowed to write. Call guard_whoami for full details.",
       };
-    case "approve":
+    case "approve": {
+      const before = request.before;
       return {
         kind: "needs_approval",
-        diff: Object.entries(fields ?? {}).map(([field, after]) => ({
+        diff: proposedChanges(request).map(([field, after]) => ({
           field,
           before: before && field in before ? before[field] : null,
           after,
         })),
       };
+    }
     case "allow":
       return { kind: "allow" };
     default: {
