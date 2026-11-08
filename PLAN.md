@@ -26,13 +26,15 @@ These hold on every phase.
 3. Policy narrows the app's installed scopes. A decision never adds a project, tool, or field.
 4. Every MCP call writes exactly one `audit_event`, including unknown tokens, denials, and writes that are waiting for approval.
 5. Persist the SHA-256 hash of an agent token. Show the raw token once, in the create-agent response. Keep raw tokens out of logs, errors, and audit payloads.
-6. `jira_search_issues` appends `AND project in (<allowedProjects>)` on the server. That clause is the scope boundary. Client JQL is passed through as data.
+6. `jira_search_issues` appends the fragment from `searchProjectJql`. A project key is included only when it matches `^[A-Z][A-Z0-9_]+$`. Matching keys are quoted inside `project in (...)`. When no key matches, the fragment is `id = 0`, which matches no issues. Client JQL is passed through as data. The fragment is the scope boundary.
 7. A write whose policy `writeMode` is `approve` leaves Jira unchanged until an admin approves that pending action.
 8. User-authored text returned to an agent is wrapped with the untrusted-content marker in ARCHITECTURE §5.
 
 ## Starting state
 
-Phase 0 is done. The throwaway Forge app is `spike/mcp-webtrigger`, and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 10. A person joining the repo follows [docs/COLLABORATING.md](docs/COLLABORATING.md). Start implementation at Phase 1. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
+Phase 0, Phase 1, and Phase 2 are done on `main`. The throwaway Forge app is `spike/mcp-webtrigger`, and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 10. Phase 1 is the in-memory records, token hash, and tests in `src/domain`, `src/storage`, and `src/auth`. Phase 2 is `src/policy/decide.ts`. A person joining the repo follows [docs/COLLABORATING.md](docs/COLLABORATING.md). Start implementation at Phase 3. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
+
+There is no product `manifest.yml`. The product Forge app is not created. Forge custom-entity indexes for agents, policies, audits, and pending actions are not created. The spike entity `spike-event` is the only measured index. `npm test` runs the storage tests and the policy tests.
 
 Two facts need a human:
 
@@ -41,7 +43,9 @@ Two facts need a human:
 
 ## Target modules
 
-Phase 0 may be a single function. Phase 1 moves that function into this layout. Later phases fill the files. Policy decides; Jira code performs; the MCP handler is the only writer of audit events.
+Phase 0 is the spike. Phase 1 added the record types, the in-memory store, and token hashing. Phase 2 added `decide`. Later phases fill the remaining files. Policy decides. Jira code performs. The MCP handler is the only writer of audit events.
+
+The tree below is the target layout. The files that exist today are `src/domain/records.ts`, `src/storage/memory.ts`, `src/auth/token.ts`, and `src/policy/decide.ts`.
 
 ```
 manifest.yml
@@ -84,7 +88,7 @@ This phase decides whether the Atlassian MCP bonus is reachable. Feature work wa
 
 ## Marketplace track
 
-Parallel to Phases 1–10. Start it as soon as Phase 0's install link works, then continue with Phase 1 in the same session. Review time is the long pole, so this track stays ahead of Phase 10 items. Waiting on the Marketplace completion before Phase 1 is a stall.
+Parallel to the code phases. Start it as soon as Phase 0's install link works. Review time is the long pole, so this track stays ahead of Phase 10 items. Waiting on the Marketplace completion before the next code phase is a stall.
 
 1. Prepare the listing: short description from SUBMISSION.md, scope justification, data handling (Forge storage only, token hashes, Forge-only runtime), and the admin-page screenshots once Phase 7 exists.
 2. Hand the human the Marketplace submission or the review ticket.
@@ -94,6 +98,8 @@ Parallel to Phases 1–10. Start it as soon as Phase 0's install link works, the
 
 ## Phase 1 — Storage and domain types
 
+**Done.** `src/storage/memory.test.ts` meets the completion criterion below. The store is in memory. It is not a Forge custom entity, and the product app has no entity indexes.
+
 1. Add the four entities in ARCHITECTURE §4: `agent`, `policy`, `audit_event`, `pending_action`, including the indexes that section names.
 2. Implement create, get, and list for each entity the P0 flow uses. `audit_event` exposes create and list only.
 3. Add `src/auth/token.ts`: generate a token, store only its hash, resolve hash to agent, mark revoked.
@@ -102,6 +108,8 @@ Parallel to Phases 1–10. Start it as soon as Phase 0's install link works, the
 **Completion:** A test creates an agent, stores a policy, appends an audit event, and creates a pending action, then reads each one back with the same fields ARCHITECTURE §4 lists. `npm test` passes. Raw token values are absent from stored records.
 
 ## Phase 2 — Registry and policy
+
+**Done.** `src/policy/decide.test.ts` covers the table below, including a revoked token denied in `nextCall` before `decide`. `fieldAllowList` is stored on the policy and not enforced. Enforcement belongs with the Jira tools in Phase 3. An approval diff lists `fields` and, when the caller sent them, `body`, `transitionId`, `toStatus`, and `accountId`.
 
 1. Implement `decide` as a pure function. Inputs: agent policy, tool name, issue or project target, and (for writes) the fields being changed. Outputs: the union in Target modules.
 2. Enforce P0-3: `allowedTools`, `allowedProjects`, and `writeMode` of `deny` | `approve` | `allow`. Unknown tools and projects take the deny branch. Empty allow-lists deny.

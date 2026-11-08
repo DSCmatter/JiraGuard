@@ -20,7 +20,7 @@ JiraGuard is a Forge-hosted MCP server that lets teams connect AI agents to Jira
 
 ## Technology Explanation (draft)
 
-JiraGuard is built entirely on Forge and integrates with Jira through its REST API. It exposes an MCP server from the Forge app so any MCP client can connect. A policy engine enforces per-agent project, tool, and field limits; an approval queue holds risky writes; a content guard marks and scans untrusted issue text; and an append-only audit log in Forge storage records each call with before/after values. The admin experience is a Jira admin page. *(Adjust once the hosting approach is confirmed in the week-1 spike.)*
+JiraGuard is built entirely on Forge and integrates with Jira through its REST API. It exposes an MCP server from the Forge app so any MCP client can connect. A policy engine enforces per-agent project, tool, and field limits. An approval queue holds risky writes. A content guard marks and scans untrusted issue text. An append-only audit log in Forge storage records each call with before and after values. The admin experience is a Jira admin page. The week-1 spike confirmed the MCP endpoint is a Forge webtrigger. The product app is not deployed. See ARCHITECTURE section 10.
 
 ## Instructions for Judges (draft)
 

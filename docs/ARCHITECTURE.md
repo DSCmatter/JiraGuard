@@ -1,6 +1,6 @@
 # JiraGuard Architecture
 
-> Status: Draft v0.2. The 4 Nov 2026 spike measured hosting, `asApp()` attribution, and storage. Items still marked **[VERIFY]** were not exercised.
+> Status: Draft. The 4 Nov 2026 spike measured hosting, `asApp()` attribution, and storage. Phase 1 records and the in-memory store match section 4. Phase 2 `decide` is `src/policy/decide.ts`. The product Forge app, its entity indexes, the admin page, and the Jira tools are not built. Items still marked **[VERIFY]** were not exercised.
 
 ## 1. Context and Goals
 
@@ -58,6 +58,8 @@ Fail closed: if policy or audit storage cannot be read/written, the call is deni
 | D8 | Revert = compensating update with conflict check | Safe and simple | Cannot revert deletions or side effects outside Jira |
 
 ## 4. Data Model (Forge storage)
+
+Product code stores these shapes in memory (`src/storage/memory.ts`). It does not create Forge entities. Timestamps in that store are ISO strings. The spike rejected `Date.now()` for an integer range attribute.
 
 **agent**
 `id, name, description, token_hash, status (active|revoked), created_by, created_at, last_used_at, policy_id`

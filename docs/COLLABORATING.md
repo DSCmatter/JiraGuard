@@ -1,6 +1,6 @@
 # Join the JiraGuard repo
 
-After this guide you can clone the repo, call the deployed spike, and start the next phase without repeating Phase 0.
+After this guide you can clone the repo, call the deployed spike, and start Phase 3 without repeating Phase 0, Phase 1, or Phase 2.
 
 The product is a Forge app that sits between AI agents and Jira. Each agent gets its own token and policy. Risky writes wait for a human. Every call is audited. Behavior lives in the product docs. Order of work lives in [PLAN.md](../PLAN.md).
 
@@ -34,7 +34,7 @@ cd JiraGuard
 Read in this order.
 
 1. This file.
-2. [PLAN.md](../PLAN.md), starting at Phase 1. Phase 0 is already done.
+2. [PLAN.md](../PLAN.md), starting at Phase 3. Phase 0, Phase 1, and Phase 2 are already done.
 3. The product doc for the phase you are in. [PLAN.md](../PLAN.md) names which file that is.
 
 `spike/mcp-webtrigger` is a throwaway Forge app. It proved that a webtrigger can speak MCP. Build the product in the layout under Target modules in [PLAN.md](../PLAN.md). Leave the spike in place as evidence.
@@ -84,7 +84,7 @@ If the deploy asks you to approve a major version, stop and tell the owner. A sc
 
 If you rotate the spike token, generate a new random token, put only its SHA-256 hex digest in `TOKEN_HASH` in `src/index.js`, store the raw token in `.spike-token`, deploy, and send the new raw token to the other person in a private channel.
 
-Phase 1 and later work belong in a new app layout at the repo root, as [PLAN.md](../PLAN.md) describes. The spike manifest already has an app id. A new product app needs its own `forge create` in the JiraGuard developer space, using a template that exists today. `webtrigger` exists. `hello-world` does not. This space rejects personal apps, so omit `--personal`.
+Phase 3 and later work continue in the repo-root layout [PLAN.md](../PLAN.md) describes. `src/domain`, `src/storage`, `src/auth`, and `src/policy` are already there. The spike manifest already has an app id. A new product app needs its own `forge create` in the JiraGuard developer space, using a template that exists today. `webtrigger` exists. `hello-world` does not. This space rejects personal apps, so omit `--personal`.
 
 ## Keep secrets out of git
 
@@ -101,7 +101,7 @@ The hash in `src/index.js` is safe to commit. The raw token is not. Do not paste
 
 | Question | Read |
 |---|---|
-| What to build next, and how to tell it is done | [PLAN.md](../PLAN.md) Phase 1 |
+| What to build next, and how to tell it is done | [PLAN.md](../PLAN.md) Phase 3 |
 | What the spike measured | [Architecture](ARCHITECTURE.md) section 10 |
 | Tool names, inputs, and denial text | [MCP tool spec](MCP_TOOL_SPEC.md) |
 | What the judges must receive | [Submission draft](SUBMISSION.md) |

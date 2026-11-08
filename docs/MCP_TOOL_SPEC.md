@@ -40,7 +40,7 @@ No delete tool is exposed in v1 by design.
 ### Input schema notes (Zod)
 
 - `issueKey`: string, regex `^[A-Z][A-Z0-9_]+-\d+$`. Example: `PROJ-123`.
-- `jql`: string, max 1000 chars. The server **adds** a project restriction (`AND project in (...)`) and never trusts the agent's JQL to scope itself.
+- `jql`: string, max 1000 chars. The server appends the fragment from `searchProjectJql` and never trusts the agent's JQL to scope itself. Keys that match `^[A-Z][A-Z0-9_]+$` are quoted in `project in (...)`. If none match, the fragment is `id = 0`.
 - `body`: string, max 10,000 chars.
 - `fields`: object, only keys on the agent's `fieldAllowList`; unknown keys are rejected with the allowed list in the message.
 - `limit`: integer 1-50, default 10.
@@ -50,7 +50,7 @@ No delete tool is exposed in v1 by design.
 | writeMode | Behavior |
 |---|---|
 | `deny` | Returns `status: "denied"` with reason. |
-| `approve` | Returns `status: "pending_approval"` with `actionId` and a diff. Nothing changes in Jira until an admin approves. |
+| `approve` | Returns `status: "pending_approval"` with `actionId` and a diff. Nothing changes in Jira until an admin approves. The diff lists each `fields` entry and, when the caller sent them, `body`, `transitionId`, `toStatus`, and `accountId`. |
 | `allow` | Executes immediately; logs before/after. |
 
 ## Error messages (actionable)

@@ -2,7 +2,9 @@
 
 **A governed MCP server for Jira.** Give each AI agent its own identity, permissions, approval rules and audit trail, all running inside Atlassian Forge.
 
-> Working title. Built for Codegeist 2026. Commands and UI labels below are the target design; finalize them as the app is built.
+> Working title. Built for Codegeist 2026. Commands and UI labels below are the target design. Finalize them as the app is built.
+
+Phases 0, 1, and 2 are in this repo. `npm test` runs the storage and policy tests. The quick start below is the target admin flow. The product app and admin page are not installed.
 
 ## Why
 
@@ -74,6 +76,8 @@ Example client configuration (shape varies by client):
 - Revert cannot undo deletions or effects outside Jira.
 
 ## Development
+
+The product Forge app is not in this repo yet. Until it exists, `npm test` is the check for `src/`. Forge commands below apply to `spike/mcp-webtrigger`, or to the product app after `forge create`.
 
 ```bash
 npm install -g @forge/cli
