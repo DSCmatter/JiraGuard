@@ -111,9 +111,30 @@ describe("handleMcp", () => {
       data.issues.map((issue) => issue.key),
       ["ALPHA-1"],
     );
-    assert.equal(data.total, 1);
-    assert.equal(data.nextStartAt, null);
+    assert.equal(data.total, null);
+    assert.equal(data.nextStartAt, 2);
     assert.equal(response.body.includes("BETA"), false);
+  });
+
+  it("denies an update field outside the allow-list", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store, { writeMode: "approve" });
+    let called = false;
+    const jira = port({
+      async updateFields() {
+        called = true;
+      },
+    });
+
+    const response = await handleMcp(
+      call(token, 9, "jira_update_fields", { issueKey: "ALPHA-1", fields: { security: "internal" } }),
+      { store, jira },
+    );
+    const content = structured(response);
+
+    assert.equal(content.status, "denied");
+    assert.equal(content.message, "Denied: field 'security' is not editable by this agent. Editable fields: labels.");
+    assert.equal(called, false);
   });
 
   it("denies a BETA issue read without calling Jira", async () => {

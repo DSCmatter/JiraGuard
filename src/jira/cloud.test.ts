@@ -27,6 +27,28 @@ describe("cloud jira", () => {
     });
     assert.deepEqual(paths, ['POST /search/jql']);
     assert.deepEqual(page.issues.map((issue) => issue.key), ["SPIKE-1"]);
+    assert.equal(page.total, null);
+  });
+
+  it("reaches startAt 200 and keeps Jira's total", async () => {
+    let calls = 0;
+    const request: JiraRequest = async (_path, init) => {
+      calls += 1;
+      const max = typeof init?.body === "object" && init.body && !Array.isArray(init.body) && typeof init.body.maxResults === "number"
+        ? init.body.maxResults
+        : 0;
+      const issues = Array.from({ length: max }, (_item, index) => ({ key: `SPIKE-${calls}-${index}`, fields: {} }));
+      return http(200, JSON.stringify({ issues, nextPageToken: "next", total: 5000 }));
+    };
+    const page = await createCloudJira(request).search({
+      jql: "order by created",
+      fields: ["summary"],
+      limit: 10,
+      startAt: 200,
+    });
+    assert.equal(page.issues.length, 10);
+    assert.equal(page.total, 5000);
+    assert.ok(calls < 21);
   });
 
   it("hides the Jira body when the status is not ok", async () => {
