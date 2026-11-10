@@ -547,6 +547,17 @@ async function handleCall(
   if (!parsed.ok) {
     return toolResult(id, envelope("error", {}, parsed.message), true);
   }
+  if (parsed.call.tool === "jira_update_fields") {
+    const editor = await resolveToken(deps.store, token);
+    const editorPolicy = editor ? await deps.store.getPolicy(editor.policy_id) : null;
+    if (!editor || !editorPolicy) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    const blocked = blockedField(parsed.call.fields, editorPolicy.fieldAllowList);
+    if (blocked) {
+      return toolResult(id, envelope("denied", {}, fieldDenial(blocked, editorPolicy.fieldAllowList)), true);
+    }
+  }
   if (decision.kind === "needs_approval") {
     return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
   }
@@ -645,7 +656,7 @@ function visiblePage(page: SearchPage, allowed: readonly string[]): SearchPage {
   if (issues.length === page.issues.length) {
     return page;
   }
-  return { issues, total: issues.length, nextStartAt: null };
+  return { issues, total: null, nextStartAt: page.nextStartAt };
 }
 
 function pageJson(page: SearchPage): Json {
@@ -654,6 +665,20 @@ function pageJson(page: SearchPage): Json {
     total: page.total,
     nextStartAt: page.nextStartAt,
   };
+}
+
+function blockedField(fields: Record<string, Json>, allowed: readonly string[]): string | null {
+  for (const name of Object.keys(fields)) {
+    if (!allowed.includes(name)) {
+      return name;
+    }
+  }
+  return null;
+}
+
+function fieldDenial(field: string, allowed: readonly string[]): string {
+  const listed = allowed.length === 0 ? "none" : allowed.join(", ");
+  return `Denied: field '${field}' is not editable by this agent. Editable fields: ${listed}.`;
 }
 
 function projectKey(issueKey: string): string | null {

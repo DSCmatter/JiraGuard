@@ -562,6 +562,17 @@ async function handleCall(message, token, id, deps) {
   if (!parsed.ok) {
     return toolResult(id, envelope("error", {}, parsed.message), true);
   }
+  if (parsed.call.tool === "jira_update_fields") {
+    const editor = await resolveToken(deps.store, token);
+    const editorPolicy = editor ? await deps.store.getPolicy(editor.policy_id) : null;
+    if (!editor || !editorPolicy) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    const blocked = blockedField(parsed.call.fields, editorPolicy.fieldAllowList);
+    if (blocked) {
+      return toolResult(id, envelope("denied", {}, fieldDenial(blocked, editorPolicy.fieldAllowList)), true);
+    }
+  }
   if (decision.kind === "needs_approval") {
     return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
   }
@@ -649,7 +660,7 @@ function visiblePage(page, allowed) {
   if (issues.length === page.issues.length) {
     return page;
   }
-  return { issues, total: issues.length, nextStartAt: null };
+  return { issues, total: null, nextStartAt: page.nextStartAt };
 }
 function pageJson(page) {
   return {
@@ -657,6 +668,18 @@ function pageJson(page) {
     total: page.total,
     nextStartAt: page.nextStartAt
   };
+}
+function blockedField(fields, allowed) {
+  for (const name of Object.keys(fields)) {
+    if (!allowed.includes(name)) {
+      return name;
+    }
+  }
+  return null;
+}
+function fieldDenial(field, allowed) {
+  const listed = allowed.length === 0 ? "none" : allowed.join(", ");
+  return `Denied: field '${field}' is not editable by this agent. Editable fields: ${listed}.`;
 }
 function projectKey(issueKey) {
   const match = /^([A-Z][A-Z0-9_]+)-\d+$/.exec(issueKey);
@@ -812,7 +835,8 @@ function isRecord(value) {
 }
 
 // src/jira/cloud.ts
-var PAGE_WALKS = 20;
+var PAGE_SIZE = 100;
+var MAX_WALKS = 21;
 function createCloudJira(request) {
   return {
     async search(query) {
@@ -858,10 +882,10 @@ function createCloudJira(request) {
 async function searchPages(request, query) {
   let skipped = 0;
   let pageToken = null;
-  for (let walk = 0; walk < PAGE_WALKS; walk += 1) {
+  for (let walk = 0; walk < MAX_WALKS; walk += 1) {
     const body = {
       jql: query.jql,
-      maxResults: query.limit,
+      maxResults: PAGE_SIZE,
       fields: query.fields
     };
     if (pageToken) {
@@ -870,23 +894,25 @@ async function searchPages(request, query) {
     const payload = await send(request, "/search/jql", { method: "POST", body });
     const issues = issuesFrom(payload);
     const next = optionalString(payload, "nextPageToken");
+    const total = readTotal(payload);
     if (skipped + issues.length <= query.startAt) {
       skipped += issues.length;
       if (!next) {
-        return { issues: [], total: 0, nextStartAt: null };
+        return { issues: [], total, nextStartAt: null };
       }
       pageToken = next;
       continue;
     }
     const start = query.startAt - skipped;
     const slice = issues.slice(start, start + query.limit);
+    const moreInPage = start + query.limit < issues.length;
     return {
       issues: slice,
-      total: slice.length,
-      nextStartAt: next ? query.startAt + slice.length : null
+      total,
+      nextStartAt: next || moreInPage ? query.startAt + slice.length : null
     };
   }
-  return { issues: [], total: 0, nextStartAt: null };
+  throw new Error("search offset is too large");
 }
 async function transitionIdFor(request, issueKey, target) {
   if (!("toStatus" in target)) {
@@ -954,6 +980,12 @@ function stringField(payload, key) {
     throw new Error("Jira response is incomplete");
   }
   return payload[key];
+}
+function readTotal(payload) {
+  if (!isRecord2(payload) || typeof payload.total !== "number") {
+    return null;
+  }
+  return payload.total;
 }
 function optionalString(payload, key) {
   if (!isRecord2(payload) || typeof payload[key] !== "string" || payload[key] === "") {

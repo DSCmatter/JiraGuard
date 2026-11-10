@@ -16,7 +16,8 @@ export type JiraHttp = {
 
 export type JiraRequest = (path: string, init?: { method?: string; body?: Json }) => Promise<JiraHttp>;
 
-const PAGE_WALKS = 20;
+const PAGE_SIZE = 100;
+const MAX_WALKS = 21;
 
 export function createCloudJira(request: JiraRequest): JiraWork {
   return {
@@ -67,10 +68,10 @@ async function searchPages(
 ): Promise<SearchPage> {
   let skipped = 0;
   let pageToken: string | null = null;
-  for (let walk = 0; walk < PAGE_WALKS; walk += 1) {
+  for (let walk = 0; walk < MAX_WALKS; walk += 1) {
     const body: { [key: string]: Json } = {
       jql: query.jql,
-      maxResults: query.limit,
+      maxResults: PAGE_SIZE,
       fields: query.fields,
     };
     if (pageToken) {
@@ -79,23 +80,25 @@ async function searchPages(
     const payload = await send(request, "/search/jql", { method: "POST", body });
     const issues = issuesFrom(payload);
     const next = optionalString(payload, "nextPageToken");
+    const total = readTotal(payload);
     if (skipped + issues.length <= query.startAt) {
       skipped += issues.length;
       if (!next) {
-        return { issues: [], total: 0, nextStartAt: null };
+        return { issues: [], total, nextStartAt: null };
       }
       pageToken = next;
       continue;
     }
     const start = query.startAt - skipped;
     const slice = issues.slice(start, start + query.limit);
+    const moreInPage = start + query.limit < issues.length;
     return {
       issues: slice,
-      total: slice.length,
-      nextStartAt: next ? query.startAt + slice.length : null,
+      total,
+      nextStartAt: next || moreInPage ? query.startAt + slice.length : null,
     };
   }
-  return { issues: [], total: 0, nextStartAt: null };
+  throw new Error("search offset is too large");
 }
 
 async function transitionIdFor(request: JiraRequest, issueKey: string, target: TransitionTarget): Promise<string> {
@@ -171,6 +174,13 @@ function stringField(payload: unknown, key: string): string {
     throw new Error("Jira response is incomplete");
   }
   return payload[key];
+}
+
+function readTotal(payload: unknown): number | null {
+  if (!isRecord(payload) || typeof payload.total !== "number") {
+    return null;
+  }
+  return payload.total;
 }
 
 function optionalString(payload: unknown, key: string): string | null {
