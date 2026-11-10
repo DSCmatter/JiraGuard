@@ -386,7 +386,7 @@ async function handleMcp(request, deps) {
     await recordParseFailure(deps.store);
     return rpcError(400, null, -32700, "Parse error");
   }
-  if (!isRecord(message) || typeof message.method !== "string") {
+  if (!isRecord(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
     return rpcError(200, rpcId(message), -32600, "Invalid Request");
   }
   const id = rpcId(message);
@@ -403,7 +403,7 @@ async function handleMcp(request, deps) {
       case "notifications/initialized":
         return respond(202);
       case "initialize":
-        return respond(200, { jsonrpc: "2.0", id, result: initializeResult(message.params) });
+        return respond(200, { jsonrpc: "2.0", id, result: initializeResult() });
       case "ping":
         return respond(200, { jsonrpc: "2.0", id, result: {} });
       case "tools/list":
@@ -692,10 +692,9 @@ function commentDocument(text) {
     content: [{ type: "paragraph", content: [{ type: "text", text }] }]
   };
 }
-function initializeResult(params) {
-  const requested = isRecord(params) && typeof params.protocolVersion === "string" ? params.protocolVersion : "2025-11-25";
+function initializeResult() {
   return {
-    protocolVersion: requested,
+    protocolVersion: "2025-11-25",
     capabilities: { tools: { listChanged: false } },
     serverInfo: { name: "jiraguard", version: "0.3.0" }
   };

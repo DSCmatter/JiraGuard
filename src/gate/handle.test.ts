@@ -323,6 +323,58 @@ describe("handleMcp", () => {
     assert.deepEqual(await store.listAudits(), []);
   });
 
+  it("rejects a tools call whose jsonrpc version is not 2.0", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store);
+    let called = false;
+    const jira = port({
+      async addComment() {
+        called = true;
+        return { id: "1" };
+      },
+    });
+    const response = await handleMcp(
+      {
+        method: "POST",
+        headers: { authorization: [`Bearer ${token}`] },
+        body: JSON.stringify({
+          id: 11,
+          method: "tools/call",
+          params: { name: "jira_add_comment", arguments: { issueKey: "ALPHA-1", body: "no" } },
+        }),
+      },
+      { store, jira },
+    );
+    const body = parsed(response);
+    const error = body.error as { code?: number };
+
+    assert.equal(error.code, -32600);
+    assert.equal(called, false);
+  });
+
+  it("answers initialize with the protocol version this server implements", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store);
+    const response = await handleMcp(
+      {
+        method: "POST",
+        headers: { authorization: [`Bearer ${token}`] },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 12,
+          method: "initialize",
+          params: { protocolVersion: "1999-01-01", capabilities: {}, clientInfo: { name: "old", version: "0" } },
+        }),
+      },
+      { store, jira: port() },
+    );
+    const body = parsed(response);
+    const result = body.result as { protocolVersion?: string };
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(result.protocolVersion, "2025-11-25");
+  });
+
   it("returns a JSON-RPC parse error and records one audit", async () => {
     const store = createMemoryStore();
     const response = await handleMcp(
