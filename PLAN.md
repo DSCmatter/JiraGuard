@@ -32,7 +32,7 @@ These hold on every phase.
 
 ## Starting state
 
-Phase 0, Phase 1, and Phase 2 are done on `main`. The throwaway Forge app is `spike/mcp-webtrigger`, and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 10. Phase 1 is the in-memory records, token hash, and tests in `src/domain`, `src/storage`, and `src/auth`. Phase 2 is `src/policy/decide.ts`. A person joining the repo follows [docs/COLLABORATING.md](docs/COLLABORATING.md). Start implementation at Phase 3. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
+Phase 0, Phase 1, Phase 2, and Phase 3 are done. The throwaway Forge app is `spike/mcp-webtrigger`, and the measurements are in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) section 10. Phase 1 is the in-memory records, token hash, and tests in `src/domain`, `src/storage`, and `src/auth`. Phase 2 is `src/policy/decide.ts`. Phase 3 is `handleMcp` plus the product app `jiraguard` in `product/`, installed on `jiraguard.atlassian.net`. A person joining the repo follows [docs/COLLABORATING.md](docs/COLLABORATING.md). Start implementation at Phase 4. Deadline: **22 Dec 2026, 12:00 PST**. Have the submission package ready by **19 Dec 2026**.
 
 There is no product `manifest.yml`. The product Forge app is not created. Forge custom-entity indexes for agents, policies, audits, and pending actions are not created. The spike entity `spike-event` is the only measured index. `npm test` runs the storage tests and the policy tests.
 
@@ -120,6 +120,8 @@ Parallel to the code phases. Start it as soon as Phase 0's install link works. R
 **Completion:** The table tests cover every acceptance line of PRD P0-2 and P0-3 that does not need a live Jira write. A revoked token's next call is denied. `npm test` passes.
 
 ## Phase 3 — Jira tools
+
+**Done.** On 10 Nov 2026 the development app searched `project = SPIKE OR project = DOCS` and returned only `SPIKE-1`. `DOCS-1` was denied without that key in the message. Comment `10001` on `SPIKE-1` is `via agent proof: phase 3 proof`, written by the app user `jiraguard`. `npm test` passed.
 
 Implement the P0 tools in MCP_TOOL_SPEC. `jira_create_issue` stays out until Phase 10.
 

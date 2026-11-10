@@ -1,6 +1,6 @@
 # Join the JiraGuard repo
 
-After this guide you can clone the repo, call the deployed spike, and start Phase 3 without repeating Phase 0, Phase 1, or Phase 2.
+After this guide you can clone the repo, call the deployed spike, and start Phase 4 without repeating Phase 0 through Phase 3.
 
 The product is a Forge app that sits between AI agents and Jira. Each agent gets its own token and policy. Risky writes wait for a human. Every call is audited. Behavior lives in the product docs. Order of work lives in [PLAN.md](../PLAN.md).
 
@@ -34,7 +34,7 @@ cd JiraGuard
 Read in this order.
 
 1. This file.
-2. [PLAN.md](../PLAN.md), starting at Phase 3. Phase 0, Phase 1, and Phase 2 are already done.
+2. [PLAN.md](../PLAN.md), starting at Phase 4. Phase 0 through Phase 3 are already done.
 3. The product doc for the phase you are in. [PLAN.md](../PLAN.md) names which file that is.
 
 `spike/mcp-webtrigger` is a throwaway Forge app. It proved that a webtrigger can speak MCP. Build the product in the layout under Target modules in [PLAN.md](../PLAN.md). Leave the spike in place as evidence.
@@ -101,7 +101,7 @@ The hash in `src/index.js` is safe to commit. The raw token is not. Do not paste
 
 | Question | Read |
 |---|---|
-| What to build next, and how to tell it is done | [PLAN.md](../PLAN.md) Phase 3 |
+| What to build next, and how to tell it is done | [PLAN.md](../PLAN.md) Phase 4 |
 | What the spike measured | [Architecture](ARCHITECTURE.md) section 10 |
 | Tool names, inputs, and denial text | [MCP tool spec](MCP_TOOL_SPEC.md) |
 | What the judges must receive | [Submission draft](SUBMISSION.md) |
