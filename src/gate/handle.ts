@@ -351,6 +351,7 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
   try {
     message = JSON.parse(request.body ?? "");
   } catch {
+    await recordParseFailure(deps.store);
     return rpcError(400, null, -32700, "Parse error");
   }
   if (!isRecord(message) || typeof message.method !== "string") {
@@ -379,7 +380,9 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
       default:
         return rpcError(200, id, -32601, "Method not found");
     }
-  } catch {
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : "call failed";
+    console.error(detail);
     if (message.method === "tools/call") {
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
@@ -580,6 +583,25 @@ async function authError(store: RecordStore, token: string, id: RpcId): Promise<
   return rpcError(401, id, -32001, message);
 }
 
+async function recordParseFailure(store: RecordStore): Promise<void> {
+  try {
+    await store.appendAudit({
+      agentId: "unknown",
+      tool: "jsonrpc",
+      issueKey: null,
+      project: null,
+      outcome: "denied",
+      reason: "parse",
+      before: null,
+      after: null,
+      injectionFlagged: false,
+      requestId: "parse",
+    });
+  } catch {
+    // A failed audit write must not hide the parse error from the caller.
+  }
+}
+
 function looseRequest(tool: string, args: unknown): DecisionRequest {
   const record = isRecord(args) ? args : {};
   const fields = jsonObject(record.fields);
@@ -592,6 +614,10 @@ function looseRequest(tool: string, args: unknown): DecisionRequest {
     ...(typeof record.toStatus === "string" ? { toStatus: record.toStatus } : {}),
     ...(typeof record.accountId === "string" || record.accountId === null ? { accountId: record.accountId } : {}),
   };
+}
+
+export function catalogToolNames(): string[] {
+  return Object.keys(TOOLS);
 }
 
 function visibleTools(allowed: readonly string[]): string[] {

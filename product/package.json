@@ -1,0 +1,8 @@
+{
+  "name": "jiraguard-product",
+  "private": true,
+  "dependencies": {
+    "@forge/api": "^8.5.0",
+    "@forge/kvs": "^2.1.2"
+  }
+}

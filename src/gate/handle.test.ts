@@ -302,18 +302,20 @@ describe("handleMcp", () => {
     assert.deepEqual(await store.listAudits(), []);
   });
 
-  it("returns a JSON-RPC parse error and writes no audit", async () => {
+  it("returns a JSON-RPC parse error and records one audit", async () => {
     const store = createMemoryStore();
-    const { token } = await seed(store);
     const response = await handleMcp(
-      { method: "POST", headers: { authorization: [`Bearer ${token}`] }, body: "{" },
+      { method: "POST", headers: {}, body: "{" },
       { store, jira: port() },
     );
     const body = parsed(response);
     const error = body.error as { code?: number };
+    const audits = await store.listAudits();
 
     assert.equal(response.statusCode, 400);
     assert.equal(error.code, -32700);
-    assert.deepEqual(await store.listAudits(), []);
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.outcome, "denied");
+    assert.equal(audits[0]?.reason, "parse");
   });
 });

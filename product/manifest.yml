@@ -1,0 +1,23 @@
+modules:
+  webtrigger:
+    - key: mcp-endpoint
+      function: mcp
+      urlFormat: v2
+      request:
+        authentication: none
+      response:
+        type: dynamic
+  function:
+    - key: mcp
+      handler: index.mcpHandler
+permissions:
+  scopes:
+    - read:jira-work
+    - write:jira-work
+    - storage:app
+app:
+  runtime:
+    name: nodejs24.x
+    memoryMB: 256
+    architecture: arm64
+  id: ari:cloud:ecosystem::app/b44fbda8-59a3-49ab-81d9-2cb197daddc4
