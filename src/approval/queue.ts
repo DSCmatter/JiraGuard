@@ -40,14 +40,15 @@ export async function approvePending(
   actionId: string,
   decidedBy: string,
 ): Promise<DecisionResult> {
-  const action = await store.getPending(actionId);
-  if (!action || action.status !== "pending") {
+  const action = await store.claimPending(actionId);
+  if (!action) {
     return { ok: false, reason: NOT_WAITING };
   }
   const call = callFrom(action);
   const agent = await store.getAgent(action.agentId);
   const policy = agent ? await store.getPolicy(agent.policy_id) : null;
   if (!call || !agent || !policy) {
+    await store.finishPending(action.id, "rejected", decidedBy);
     return { ok: false, reason: NOT_WAITING };
   }
   const storedBefore = snapshot(action.args.before);
@@ -56,9 +57,11 @@ export async function approvePending(
     try {
       current = await readBefore(jira, call);
     } catch {
+      await store.finishPending(action.id, "rejected", decidedBy);
       return { ok: false, reason: ISSUE_GONE };
     }
     if (JSON.stringify(current) !== JSON.stringify(storedBefore)) {
+      await store.finishPending(action.id, "rejected", decidedBy);
       return { ok: false, reason: ISSUE_CHANGED };
     }
   }
@@ -81,8 +84,8 @@ export async function rejectPending(
   actionId: string,
   decidedBy: string,
 ): Promise<DecisionResult> {
-  const action = await store.getPending(actionId);
-  if (!action || action.status !== "pending") {
+  const action = await store.claimPending(actionId);
+  if (!action) {
     return { ok: false, reason: NOT_WAITING };
   }
   const finished = await store.finishPending(action.id, "rejected", decidedBy);

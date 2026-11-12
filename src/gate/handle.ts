@@ -765,6 +765,7 @@ async function handleCall(
     });
     const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved) {
+      await deps.store.finishPending(action.id, "expired", "system");
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     return toolResult(

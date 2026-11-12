@@ -284,6 +284,21 @@ describe("handleMcp", () => {
     assert.equal((await store.listPending({ status: "pending" })).length, 1);
   });
 
+  it("expires the held action when the pending audit cannot be stored", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store, { writeMode: "approve", allowedTools: ["jira_add_comment"] });
+    store.appendAudit = async () => {
+      throw new Error("full");
+    };
+    const response = await handleMcp(call(token, 32, "jira_add_comment", { issueKey: "ALPHA-1", body: "wait" }), {
+      store,
+      jira: port(),
+    });
+    assert.equal(structured(response).status, "error");
+    assert.equal((await store.listPending({ status: "pending" })).length, 0);
+    assert.equal((await store.listPending())[0]?.status, "expired");
+  });
+
   it("sends the agent name on an allowed comment", async () => {
     const store = createMemoryStore();
     const { token } = await seed(store, { name: "proof", allowedTools: ["jira_add_comment"] });

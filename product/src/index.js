@@ -743,6 +743,7 @@ async function handleCall(message, token, id, deps) {
     });
     const saved2 = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved2) {
+      await deps.store.finishPending(action.id, "expired", "system");
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     return toolResult(
@@ -1347,7 +1348,12 @@ function createKvsStore(kv) {
     },
     async finishPending(id, status, decidedBy) {
       const found = await readRecord(kv, pendingKey(id));
-      if (!found || found.status !== "pending") {
+      if (!found) {
+        return null;
+      }
+      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected");
+      const expire = found.status === "pending" && status === "expired";
+      if (!claimed && !expire) {
         return null;
       }
       const finished = {
@@ -1358,6 +1364,19 @@ function createKvsStore(kv) {
       };
       await kv.set(pendingKey(id), finished);
       return finished;
+    },
+    async claimPending(id) {
+      const found = await readRecord(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const claimed = { ...found, status: "claimed" };
+      await kv.set(pendingKey(id), claimed);
+      const stored = await readRecord(kv, pendingKey(id));
+      if (!stored || stored.status !== "claimed") {
+        return null;
+      }
+      return stored;
     }
   };
 }

@@ -170,4 +170,76 @@ describe("approval queue", () => {
     assert.equal((await store.listPending()).length, 0);
     assert.equal(transitions, 0);
   });
+
+  it("runs the transition once when two approvals race", async () => {
+    const { store, token, jira, transitions, release } = await heldTransition();
+    const id = (await listApprovalQueue(store))[0]!.id;
+    const first = approvePending(store, jira, id, "one");
+    const second = approvePending(store, jira, id, "two");
+    await new Promise((resolve) => setImmediate(resolve));
+    release();
+    const results = await Promise.all([first, second]);
+    assert.equal(transitions(), 1);
+    assert.equal(results.filter((result) => result.ok).length, 1);
+    assert.equal(token.length > 0, true);
+  });
+
+  it("does not reject an action while approval is running", async () => {
+    const { store, jira, transitions, release } = await heldTransition();
+    const id = (await listApprovalQueue(store))[0]!.id;
+    const approval = approvePending(store, jira, id, "admin");
+    await new Promise((resolve) => setImmediate(resolve));
+    const rejected = await rejectPending(store, id, "admin");
+    release();
+    const approved = await approval;
+    assert.equal(rejected.ok, false);
+    assert.equal(approved.ok, true);
+    assert.equal(transitions(), 1);
+  });
 });
+
+async function heldTransition() {
+  const store = createMemoryStore();
+  const { token } = await seedProofAgent(store, {
+    name: "proof",
+    description: "",
+    createdBy: "admin",
+    allowedTools: ["jira_transition_issue"],
+    allowedProjects: ["ALPHA"],
+    writeMode: "approve",
+    fieldAllowList: [],
+    rateLimit: { reads: 10, writes: 10, windowSeconds: 60 },
+    maxResults: 10,
+  });
+  let count = 0;
+  let release: (value?: void) => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const jira: JiraWork = {
+    async search() {
+      throw new Error("unexpected");
+    },
+    async getIssue() {
+      return { key: "ALPHA-1", fields: { status: { name: "To Do" } } };
+    },
+    async listTransitions() {
+      return [];
+    },
+    async addComment() {
+      throw new Error("unexpected");
+    },
+    async transition() {
+      count += 1;
+      await gate;
+    },
+    async assign() {
+      throw new Error("unexpected");
+    },
+    async updateFields() {
+      throw new Error("unexpected");
+    },
+  };
+  await handleMcp(call(token, 1, { issueKey: "ALPHA-1", toStatus: "Done" }), { store, jira });
+  return { store, token, jira, transitions: () => count, release };
+}

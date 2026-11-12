@@ -83,7 +83,12 @@ export function createKvsStore(kv: KeyValue): RecordStore {
     },
     async finishPending(id, status, decidedBy) {
       const found = await readRecord<PendingAction>(kv, pendingKey(id));
-      if (!found || found.status !== "pending") {
+      if (!found) {
+        return null;
+      }
+      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected");
+      const expire = found.status === "pending" && status === "expired";
+      if (!claimed && !expire) {
         return null;
       }
       const finished: PendingAction = {
@@ -94,6 +99,19 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       };
       await kv.set(pendingKey(id), finished);
       return finished;
+    },
+    async claimPending(id) {
+      const found = await readRecord<PendingAction>(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const claimed: PendingAction = { ...found, status: "claimed" };
+      await kv.set(pendingKey(id), claimed);
+      const stored = await readRecord<PendingAction>(kv, pendingKey(id));
+      if (!stored || stored.status !== "claimed") {
+        return null;
+      }
+      return stored;
     },
   };
 }

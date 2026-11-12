@@ -16,7 +16,7 @@ export type AuditOutcome =
   | "reverted"
   | "uncertain";
 
-export type PendingStatus = "pending" | "approved" | "rejected" | "expired";
+export type PendingStatus = "pending" | "claimed" | "approved" | "rejected" | "expired";
 
 export type RateLimit = {
   reads: number;
