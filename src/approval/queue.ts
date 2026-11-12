@@ -9,7 +9,7 @@ export type QueueRow = {
   issueKey: string;
   tool: string;
   diff: PendingAction["diff"];
-  status: "pending" | "uncertain";
+  status: "pending" | "claimed" | "uncertain";
 };
 
 export type DecisionResult = { ok: true } | { ok: false; reason: string };
@@ -22,7 +22,7 @@ export async function listApprovalQueue(store: RecordStore): Promise<QueueRow[]>
   const actions = await store.listPending();
   const rows: QueueRow[] = [];
   for (const action of actions) {
-    if (action.status !== "pending" && action.status !== "uncertain") {
+    if (action.status !== "pending" && action.status !== "claimed" && action.status !== "uncertain") {
       continue;
     }
     const agent = await store.getAgent(action.agentId);
@@ -68,6 +68,13 @@ export async function approvePending(
     if (JSON.stringify(current) !== JSON.stringify(storedBefore)) {
       await store.finishPending(action.id, "rejected", decidedBy);
       return { ok: false, reason: ISSUE_CHANGED };
+    }
+  } else {
+    try {
+      await jira.getIssue(action.issueKey, []);
+    } catch {
+      await store.finishPending(action.id, "rejected", decidedBy);
+      return { ok: false, reason: ISSUE_GONE };
     }
   }
   try {

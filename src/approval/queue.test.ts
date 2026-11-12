@@ -4,7 +4,7 @@ import { handleMcp, seedProofAgent, type JiraWork } from "../gate/handle.ts";
 import { createMemoryStore } from "../storage/memory.ts";
 import { approvePending, listApprovalQueue, rejectPending } from "./queue.ts";
 
-function call(token: string, id: number, args: Record<string, unknown>) {
+function call(token: string, id: number, args: Record<string, unknown>, name = "jira_transition_issue") {
   return {
     method: "POST",
     headers: { authorization: [`Bearer ${token}`] },
@@ -12,7 +12,7 @@ function call(token: string, id: number, args: Record<string, unknown>) {
       jsonrpc: "2.0",
       id,
       method: "tools/call",
-      params: { name: "jira_transition_issue", arguments: args },
+      params: { name, arguments: args },
     }),
   };
 }
@@ -221,6 +221,104 @@ describe("approval queue", () => {
     assert.equal(again.ok, false);
     assert.equal(transitions, 1);
     assert.equal((await store.listAudits()).some((event) => event.outcome === "uncertain"), true);
+  });
+
+  it("refuses a comment when the issue is gone and does not write it", async () => {
+    const store = createMemoryStore();
+    const { token } = await seedProofAgent(store, {
+      name: "proof",
+      description: "",
+      createdBy: "admin",
+      allowedTools: ["jira_add_comment"],
+      allowedProjects: ["ALPHA"],
+      writeMode: "approve",
+      fieldAllowList: [],
+      rateLimit: { reads: 10, writes: 10, windowSeconds: 60 },
+      maxResults: 10,
+    });
+    let comments = 0;
+    const jira: JiraWork = {
+      async search() {
+        throw new Error("unexpected");
+      },
+      async getIssue() {
+        throw new Error("missing");
+      },
+      async listTransitions() {
+        return [];
+      },
+      async addComment() {
+        comments += 1;
+        return { id: "10002" };
+      },
+      async transition() {
+        throw new Error("unexpected");
+      },
+      async assign() {
+        throw new Error("unexpected");
+      },
+      async updateFields() {
+        throw new Error("unexpected");
+      },
+    };
+    await handleMcp(call(token, 1, { issueKey: "ALPHA-1", body: "note" }, "jira_add_comment"), { store, jira });
+    const id = (await listApprovalQueue(store))[0]!.id;
+    const refused = await approvePending(store, jira, id, "admin");
+    assert.equal(refused.ok, false);
+    if (!refused.ok) {
+      assert.equal(refused.reason, "That issue is no longer available.");
+    }
+    assert.equal(comments, 0);
+    assert.equal((await store.getPending(id))?.status, "rejected");
+  });
+
+  it("keeps an interrupted claim on the queue", async () => {
+    const store = createMemoryStore();
+    const { token } = await seedProofAgent(store, {
+      name: "proof",
+      description: "",
+      createdBy: "admin",
+      allowedTools: ["jira_transition_issue"],
+      allowedProjects: ["ALPHA"],
+      writeMode: "approve",
+      fieldAllowList: [],
+      rateLimit: { reads: 10, writes: 10, windowSeconds: 60 },
+      maxResults: 10,
+    });
+    let transitions = 0;
+    const jira: JiraWork = {
+      async search() {
+        throw new Error("unexpected");
+      },
+      async getIssue() {
+        return { key: "ALPHA-1", fields: { status: { name: "To Do" } } };
+      },
+      async listTransitions() {
+        return [];
+      },
+      async addComment() {
+        throw new Error("unexpected");
+      },
+      async transition() {
+        transitions += 1;
+      },
+      async assign() {
+        throw new Error("unexpected");
+      },
+      async updateFields() {
+        throw new Error("unexpected");
+      },
+    };
+    await handleMcp(call(token, 1, { issueKey: "ALPHA-1", toStatus: "Done" }), { store, jira });
+    const id = (await listApprovalQueue(store))[0]!.id;
+    const claimed = await store.claimPending(id);
+    assert.equal(claimed?.status, "claimed");
+    const visible = await listApprovalQueue(store);
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0]?.status, "claimed");
+    const again = await approvePending(store, jira, id, "admin");
+    assert.equal(again.ok, false);
+    assert.equal(transitions, 0);
   });
 
   it("runs the transition once when two approvals race", async () => {
