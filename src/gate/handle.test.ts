@@ -279,9 +279,9 @@ describe("handleMcp", () => {
     assert.equal(result.isError, false);
     assert.equal(content.status, "pending_approval");
     assert.deepEqual(data.diff, [{ field: "body", before: null, after: "shipped" }]);
-    assert.equal(response.body.includes("actionId"), false);
+    assert.match(String(content.message), /^Held for approval \(action act_/);
     assert.equal(commented, false);
-    assert.deepEqual(await store.listPending(), []);
+    assert.equal((await store.listPending({ status: "pending" })).length, 1);
   });
 
   it("sends the agent name on an allowed comment", async () => {

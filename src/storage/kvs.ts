@@ -81,6 +81,20 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       const actions = await readAll<PendingAction>(kv, PENDING, pendingKey);
       return actions.filter((action) => query?.status === undefined || action.status === query.status);
     },
+    async finishPending(id, status, decidedBy) {
+      const found = await readRecord<PendingAction>(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const finished: PendingAction = {
+        ...found,
+        status,
+        decidedBy,
+        decidedAt: new Date().toISOString(),
+      };
+      await kv.set(pendingKey(id), finished);
+      return finished;
+    },
   };
 }
 

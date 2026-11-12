@@ -181,7 +181,7 @@ var LIMITS = {
 };
 var ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 var DEFAULT_FIELDS = ["summary", "status", "assignee", "description", "issuetype"];
-var HELD = "Held for approval. A Jira admin must approve before this change applies. Do not retry; check back later.";
+var HELD_PREFIX = "Held for approval (action ";
 var FAIL_CLOSED = "Denied: the call could not be checked. Retry later.";
 var JSON_HEADERS = {
   "Content-Type": ["application/json"],
@@ -609,6 +609,23 @@ function row(request, agent, outcome, reason, id, after = null, before = null) {
     requestId: requestLabel(id)
   };
 }
+function heldMessage(actionId) {
+  return `${HELD_PREFIX}${actionId}). A Jira admin must approve before this change applies. Do not retry; check back later.`;
+}
+function pendingArgs(call) {
+  switch (call.tool) {
+    case "jira_add_comment":
+      return { body: call.body };
+    case "jira_transition_issue":
+      return "transitionId" in call.target ? { transitionId: call.target.transitionId } : { toStatus: call.target.toStatus };
+    case "jira_assign_issue":
+      return { accountId: call.accountId };
+    case "jira_update_fields":
+      return { fields: call.fields };
+    default:
+      return {};
+  }
+}
 function isWrite(tool) {
   return tool === "jira_add_comment" || tool === "jira_transition_issue" || tool === "jira_assign_issue" || tool === "jira_update_fields";
 }
@@ -692,11 +709,31 @@ async function handleCall(message, token, id, deps) {
     }
   }
   if (decision.kind === "needs_approval") {
-    const saved2 = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
+    const holder = await knownAgent(deps.store, token);
+    const call = parsed.call;
+    const issueKey = "issueKey" in call ? call.issueKey : "";
+    let before = null;
+    try {
+      before = await readBefore(deps.jira, call);
+    } catch {
+      before = null;
+    }
+    const action = await deps.store.createPending({
+      agentId: holder,
+      tool: call.tool,
+      args: { ...pendingArgs(call), before },
+      issueKey,
+      diff: decision.diff
+    });
+    const saved2 = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved2) {
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
+    return toolResult(
+      id,
+      envelope("pending_approval", { actionId: action.id, diff: decision.diff }, heldMessage(action.id)),
+      false
+    );
   }
   const agent = await resolveToken(deps.store, token);
   const policy = agent ? await deps.store.getPolicy(agent.policy_id) : null;
@@ -1291,6 +1328,20 @@ function createKvsStore(kv) {
     async listPending(query) {
       const actions = await readAll(kv, PENDING, pendingKey);
       return actions.filter((action) => query?.status === void 0 || action.status === query.status);
+    },
+    async finishPending(id, status, decidedBy) {
+      const found = await readRecord(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const finished = {
+        ...found,
+        status,
+        decidedBy,
+        decidedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await kv.set(pendingKey(id), finished);
+      return finished;
     }
   };
 }

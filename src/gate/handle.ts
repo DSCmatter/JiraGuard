@@ -74,8 +74,7 @@ const ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 
 const DEFAULT_FIELDS = ["summary", "status", "assignee", "description", "issuetype"] as const;
 
-const HELD =
-  "Held for approval. A Jira admin must approve before this change applies. Do not retry; check back later.";
+const HELD_PREFIX = "Held for approval (action ";
 
 const FAIL_CLOSED = "Denied: the call could not be checked. Retry later.";
 
@@ -86,7 +85,7 @@ const JSON_HEADERS: Record<string, string[]> = {
   "Access-Control-Allow-Methods": ["POST, OPTIONS"],
 };
 
-type ToolCall =
+export type ToolCall =
   | { tool: "guard_whoami" }
   | { tool: "jira_search_issues"; jql: string; fields: string[]; limit: number; startAt: number }
   | { tool: "jira_get_issue"; issueKey: string; fields: string[] }
@@ -498,7 +497,7 @@ function targetOf(call: ToolCall): PolicyTarget {
   }
 }
 
-async function executeAllowed(
+export async function executeAllowed(
   call: ToolCall,
   agent: AgentRecord,
   policy: PolicyRecord,
@@ -612,6 +611,27 @@ function row(
   };
 }
 
+function heldMessage(actionId: string): string {
+  return `${HELD_PREFIX}${actionId}). A Jira admin must approve before this change applies. Do not retry; check back later.`;
+}
+
+function pendingArgs(call: ToolCall): Record<string, Json> {
+  switch (call.tool) {
+    case "jira_add_comment":
+      return { body: call.body };
+    case "jira_transition_issue":
+      return "transitionId" in call.target
+        ? { transitionId: call.target.transitionId }
+        : { toStatus: call.target.toStatus };
+    case "jira_assign_issue":
+      return { accountId: call.accountId };
+    case "jira_update_fields":
+      return { fields: call.fields };
+    default:
+      return {};
+  }
+}
+
 function isWrite(tool: string): boolean {
   return (
     tool === "jira_add_comment" ||
@@ -636,7 +656,7 @@ function writeAfter(call: ToolCall, agentName: string): Record<string, Json> {
   }
 }
 
-async function readBefore(jira: JiraWork, call: ToolCall): Promise<Record<string, Json> | null> {
+export async function readBefore(jira: JiraWork, call: ToolCall): Promise<Record<string, Json> | null> {
   switch (call.tool) {
     case "jira_update_fields": {
       const names = Object.keys(call.fields);
@@ -710,11 +730,31 @@ async function handleCall(
     }
   }
   if (decision.kind === "needs_approval") {
-    const saved = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
+    const holder = await knownAgent(deps.store, token);
+    const call = parsed.call;
+    const issueKey = "issueKey" in call ? call.issueKey : "";
+    let before: Record<string, Json> | null = null;
+    try {
+      before = await readBefore(deps.jira, call);
+    } catch {
+      before = null;
+    }
+    const action = await deps.store.createPending({
+      agentId: holder,
+      tool: call.tool,
+      args: { ...pendingArgs(call), before },
+      issueKey,
+      diff: decision.diff,
+    });
+    const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved) {
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
+    return toolResult(
+      id,
+      envelope("pending_approval", { actionId: action.id, diff: decision.diff }, heldMessage(action.id)),
+      false,
+    );
   }
 
   const agent = await resolveToken(deps.store, token);

@@ -64,6 +64,7 @@ export type RecordStore = {
   createPending(input: NewPending): Promise<PendingAction>;
   getPending(id: string): Promise<PendingAction | null>;
   listPending(query?: PendingQuery): Promise<PendingAction[]>;
+  finishPending(id: string, status: "approved" | "rejected", decidedBy: string): Promise<PendingAction | null>;
 };
 
 function id(prefix: string): string {
@@ -156,6 +157,16 @@ export function createMemoryStore(): RecordStore {
       return pending
         .filter((action) => query?.status === undefined || action.status === query.status)
         .map((action) => copy(action));
+    },
+    async finishPending(actionId, status, decidedBy) {
+      const found = pending.find((action) => action.id === actionId);
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      found.status = status;
+      found.decidedBy = decidedBy;
+      found.decidedAt = new Date().toISOString();
+      return copy(found);
     },
   };
 }
