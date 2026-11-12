@@ -13,7 +13,8 @@ export type AuditOutcome =
   | "approved"
   | "rejected"
   | "auth_failed"
-  | "reverted";
+  | "reverted"
+  | "uncertain";
 
 export type PendingStatus = "pending" | "approved" | "rejected" | "expired";
 

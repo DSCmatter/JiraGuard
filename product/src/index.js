@@ -597,13 +597,14 @@ async function knownAgent(store2, token) {
   const agent = await resolveToken(store2, token);
   return agent ? agent.id : "unknown";
 }
-function row(request, agent, outcome, reason, id, after = null) {
+function row(request, agent, outcome, reason, id, after = null, before = null) {
   return {
     agentId: agent,
     tool: request.tool,
     issueKey: request.issueKey ?? null,
     outcome,
     reason,
+    before,
     after,
     requestId: requestLabel(id)
   };
@@ -624,6 +625,36 @@ function writeAfter(call, agentName) {
     default:
       return {};
   }
+}
+async function readBefore(jira, call) {
+  switch (call.tool) {
+    case "jira_update_fields": {
+      const names = Object.keys(call.fields);
+      const issue = await jira.getIssue(call.issueKey, names);
+      const before = {};
+      for (const name of names) {
+        before[name] = issue.fields[name] ?? null;
+      }
+      return before;
+    }
+    case "jira_assign_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["assignee"]);
+      return { accountId: textField(issue.fields.assignee, "accountId") };
+    }
+    case "jira_transition_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["status"]);
+      return { status: textField(issue.fields.status, "name") };
+    }
+    default:
+      return null;
+  }
+}
+function textField(value, key) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const field = value[key];
+  return typeof field === "string" ? field : null;
 }
 async function handleCall(message, token, id, deps) {
   const params = isRecord(message.params) ? message.params : {};
@@ -661,8 +692,8 @@ async function handleCall(message, token, id, deps) {
     }
   }
   if (decision.kind === "needs_approval") {
-    const saved = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
-    if (!saved) {
+    const saved2 = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
+    if (!saved2) {
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
@@ -681,16 +712,28 @@ async function handleCall(message, token, id, deps) {
     }
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
-  if (!isWrite(parsed.call.tool)) {
-    const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
-    if (!saved) {
+  if (isWrite(parsed.call.tool)) {
+    let before = null;
+    try {
+      before = await readBefore(deps.jira, parsed.call);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, writeAfter(parsed.call, agent.name)));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    try {
+      const result2 = await executeAllowed(parsed.call, agent, policy, deps.jira);
+      await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name), before));
+      return toolResult(id, result2, false);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "uncertain", "uncertain", id, writeAfter(parsed.call, agent.name), before));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
   }
-  const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
-  if (isWrite(parsed.call.tool)) {
-    await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name)));
+  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
+  if (!saved) {
+    return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
+  const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
   return toolResult(id, result, false);
 }
 async function listResponse(store2, agent, token, id) {

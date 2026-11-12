@@ -598,6 +598,7 @@ function row(
   reason: string | null,
   id: RpcId,
   after: Record<string, Json> | null = null,
+  before: Record<string, Json> | null = null,
 ) {
   return {
     agentId: agent,
@@ -605,6 +606,7 @@ function row(
     issueKey: request.issueKey ?? null,
     outcome,
     reason,
+    before,
     after,
     requestId: requestLabel(id),
   };
@@ -632,6 +634,38 @@ function writeAfter(call: ToolCall, agentName: string): Record<string, Json> {
     default:
       return {};
   }
+}
+
+async function readBefore(jira: JiraWork, call: ToolCall): Promise<Record<string, Json> | null> {
+  switch (call.tool) {
+    case "jira_update_fields": {
+      const names = Object.keys(call.fields);
+      const issue = await jira.getIssue(call.issueKey, names);
+      const before: Record<string, Json> = {};
+      for (const name of names) {
+        before[name] = issue.fields[name] ?? null;
+      }
+      return before;
+    }
+    case "jira_assign_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["assignee"]);
+      return { accountId: textField(issue.fields.assignee, "accountId") };
+    }
+    case "jira_transition_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["status"]);
+      return { status: textField(issue.fields.status, "name") };
+    }
+    default:
+      return null;
+  }
+}
+
+function textField(value: Json | undefined, key: string): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const field = value[key];
+  return typeof field === "string" ? field : null;
 }
 
 async function handleCall(
@@ -697,16 +731,28 @@ async function handleCall(
     }
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
-  if (!isWrite(parsed.call.tool)) {
-    const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
-    if (!saved) {
+  if (isWrite(parsed.call.tool)) {
+    let before: Record<string, Json> | null = null;
+    try {
+      before = await readBefore(deps.jira, parsed.call);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, writeAfter(parsed.call, agent.name)));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    try {
+      const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
+      await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name), before));
+      return toolResult(id, result, false);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "uncertain", "uncertain", id, writeAfter(parsed.call, agent.name), before));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
   }
-  const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
-  if (isWrite(parsed.call.tool)) {
-    await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name)));
+  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
+  if (!saved) {
+    return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
+  const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
   return toolResult(id, result, false);
 }
 

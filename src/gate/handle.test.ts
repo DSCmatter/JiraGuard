@@ -307,6 +307,47 @@ describe("handleMcp", () => {
     assert.equal(comments[0]?.content[0]?.content[0]?.text, "via agent proof: ship the notes");
   });
 
+  it("records the previous field value on an allowed update", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store, { allowedTools: ["jira_update_fields"] });
+    const jira = port({
+      async getIssue() {
+        return { key: "ALPHA-1", fields: { labels: ["old"] } };
+      },
+      async updateFields() {
+        return undefined;
+      },
+    });
+    const response = await handleMcp(
+      call(token, 30, "jira_update_fields", { issueKey: "ALPHA-1", fields: { labels: ["new"] } }),
+      { store, jira },
+    );
+    const audits = await store.listAudits({ outcome: "allowed" });
+    assert.equal(structured(response).status, "ok");
+    assert.equal(audits.length, 1);
+    assert.deepEqual(audits[0]?.before, { labels: ["old"] });
+    assert.deepEqual(audits[0]?.after, { labels: ["new"] });
+  });
+
+  it("records an uncertain write when Jira throws after the call starts", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store, { name: "proof", allowedTools: ["jira_add_comment"] });
+    const jira = port({
+      async addComment() {
+        throw new Error("comment stored but read failed");
+      },
+    });
+    const response = await handleMcp(
+      call(token, 31, "jira_add_comment", { issueKey: "ALPHA-1", body: "ship the notes" }),
+      { store, jira },
+    );
+    const audits = await store.listAudits();
+    assert.equal(structured(response).status, "error");
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.outcome, "uncertain");
+    assert.deepEqual(audits[0]?.after, { body: "via agent proof: ship the notes" });
+  });
+
   it("returns the auth sentence for a missing bearer", async () => {
     const store = createMemoryStore();
     const decision = await nextCall(store, "", { tool: "jira_get_issue" });
