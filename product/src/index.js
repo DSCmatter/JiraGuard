@@ -626,6 +626,20 @@ function pendingArgs(call) {
       return {};
   }
 }
+function diffWithBefore(call, diff, before) {
+  if (!before) {
+    return diff;
+  }
+  return diff.map((entry) => {
+    if (call.tool === "jira_transition_issue") {
+      return { ...entry, before: before.status ?? null };
+    }
+    if (entry.field in before) {
+      return { ...entry, before: before[entry.field] ?? null };
+    }
+    return entry;
+  });
+}
 function isWrite(tool) {
   return tool === "jira_add_comment" || tool === "jira_transition_issue" || tool === "jira_assign_issue" || tool === "jira_update_fields";
 }
@@ -712,18 +726,20 @@ async function handleCall(message, token, id, deps) {
     const holder = await knownAgent(deps.store, token);
     const call = parsed.call;
     const issueKey = "issueKey" in call ? call.issueKey : "";
-    let before = null;
+    let before;
     try {
       before = await readBefore(deps.jira, call);
     } catch {
-      before = null;
+      await keepAudit(deps.store, row(request, holder, "denied", "jira", id));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
+    const diff = diffWithBefore(call, decision.diff, before);
     const action = await deps.store.createPending({
       agentId: holder,
       tool: call.tool,
       args: { ...pendingArgs(call), before },
       issueKey,
-      diff: decision.diff
+      diff
     });
     const saved2 = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved2) {
@@ -731,7 +747,7 @@ async function handleCall(message, token, id, deps) {
     }
     return toolResult(
       id,
-      envelope("pending_approval", { actionId: action.id, diff: decision.diff }, heldMessage(action.id)),
+      envelope("pending_approval", { actionId: action.id, diff }, heldMessage(action.id)),
       false
     );
   }

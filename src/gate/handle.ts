@@ -1,5 +1,5 @@
 import { registerAgent, resolveToken } from "../auth/token.ts";
-import type { AgentRecord, AuditOutcome, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
+import type { AgentRecord, AuditOutcome, FieldDiff, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
 import { nextCall, searchProjectJql } from "../policy/decide.ts";
 import type { DecisionRequest } from "../policy/decide.ts";
 import type { RecordStore } from "../storage/memory.ts";
@@ -632,6 +632,21 @@ function pendingArgs(call: ToolCall): Record<string, Json> {
   }
 }
 
+function diffWithBefore(call: ToolCall, diff: FieldDiff[], before: Record<string, Json> | null): FieldDiff[] {
+  if (!before) {
+    return diff;
+  }
+  return diff.map((entry) => {
+    if (call.tool === "jira_transition_issue") {
+      return { ...entry, before: before.status ?? null };
+    }
+    if (entry.field in before) {
+      return { ...entry, before: before[entry.field] ?? null };
+    }
+    return entry;
+  });
+}
+
 function isWrite(tool: string): boolean {
   return (
     tool === "jira_add_comment" ||
@@ -733,18 +748,20 @@ async function handleCall(
     const holder = await knownAgent(deps.store, token);
     const call = parsed.call;
     const issueKey = "issueKey" in call ? call.issueKey : "";
-    let before: Record<string, Json> | null = null;
+    let before: Record<string, Json> | null;
     try {
       before = await readBefore(deps.jira, call);
     } catch {
-      before = null;
+      await keepAudit(deps.store, row(request, holder, "denied", "jira", id));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
+    const diff = diffWithBefore(call, decision.diff, before);
     const action = await deps.store.createPending({
       agentId: holder,
       tool: call.tool,
       args: { ...pendingArgs(call), before },
       issueKey,
-      diff: decision.diff,
+      diff,
     });
     const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id));
     if (!saved) {
@@ -752,7 +769,7 @@ async function handleCall(
     }
     return toolResult(
       id,
-      envelope("pending_approval", { actionId: action.id, diff: decision.diff }, heldMessage(action.id)),
+      envelope("pending_approval", { actionId: action.id, diff }, heldMessage(action.id)),
       false,
     );
   }
