@@ -8,16 +8,16 @@ import type {
   PendingAction,
   PolicyRecord,
 } from "../domain/records.ts";
-import type { AuditQuery, PendingQuery, RecordStore } from "./memory.ts";
+import { auditMatches, type AuditQuery, type PendingQuery, type RecordStore } from "./memory.ts";
 
 export type KeyValue = {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown): Promise<void>;
+  list(prefix: string): Promise<string[]>;
 };
 
 const AGENTS = "index:agents";
 const POLICIES = "index:policies";
-const AUDITS = "index:audits";
 const PENDING = "index:pending";
 
 export function createKvsStore(kv: KeyValue): RecordStore {
@@ -55,12 +55,18 @@ export function createKvsStore(kv: KeyValue): RecordStore {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
-      await addId(kv, AUDITS, event.id);
       return event;
     },
     async listAudits(query) {
-      const events = await readAll<AuditEvent>(kv, AUDITS, auditKey);
-      return events.filter((event) => matchesAudit(event, query));
+      const keys = await kv.list("audit:");
+      const records: AuditEvent[] = [];
+      for (const key of keys) {
+        const event = await readRecord<AuditEvent>(kv, key);
+        if (event && matchesAudit(event, query)) {
+          records.push(event);
+        }
+      }
+      return records;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -168,14 +174,5 @@ async function readAll<T>(kv: KeyValue, index: string, keyFor: (id: string) => s
 }
 
 function matchesAudit(event: AuditEvent, query: AuditQuery | undefined): boolean {
-  if (query?.agentId !== undefined && event.agentId !== query.agentId) {
-    return false;
-  }
-  if (query?.outcome !== undefined && event.outcome !== query.outcome) {
-    return false;
-  }
-  if (query?.issueKey !== undefined && event.issueKey !== query.issueKey) {
-    return false;
-  }
-  return true;
+  return auditMatches(event, query);
 }

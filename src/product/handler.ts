@@ -1,5 +1,5 @@
 import { asApp, route } from "@forge/api";
-import { kvs } from "@forge/kvs";
+import { kvs, WhereConditions } from "@forge/kvs";
 import { handleMcp, type WebtriggerRequest, type WebtriggerResponse } from "../gate/handle.ts";
 import { createCloudJira, type JiraHttp } from "../jira/cloud.ts";
 import { ensureProofAgent } from "./proof.ts";
@@ -11,6 +11,22 @@ const store = createKvsStore({
   },
   async set(key, value) {
     await kvs.set(key, value);
+  },
+  async list(prefix) {
+    const keys: string[] = [];
+    let cursor: string | undefined;
+    do {
+      let query = kvs.query().where("key", WhereConditions.beginsWith(prefix)).limit(100);
+      if (cursor) {
+        query = query.cursor(cursor);
+      }
+      const page = await query.getMany();
+      for (const result of page.results) {
+        keys.push(result.key);
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return keys;
   },
 });
 

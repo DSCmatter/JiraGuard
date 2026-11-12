@@ -387,6 +387,14 @@ async function handleMcp(request, deps) {
     return rpcError(400, null, -32700, "Parse error");
   }
   if (!isRecord(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+    await keepAudit(deps.store, {
+      agentId: "unknown",
+      tool: "jsonrpc",
+      issueKey: null,
+      outcome: "denied",
+      reason: "request",
+      requestId: requestLabel(rpcId(message))
+    });
     return rpcError(200, rpcId(message), -32600, "Invalid Request");
   }
   const id = rpcId(message);
@@ -397,19 +405,38 @@ async function handleMcp(request, deps) {
     }
     const agent = await resolveToken(deps.store, token);
     if (!agent) {
-      return await authError(deps.store, token, id);
+      return await authError(deps.store, token, id, message.method);
     }
     switch (message.method) {
       case "notifications/initialized":
-        return respond(202);
       case "initialize":
-        return respond(200, { jsonrpc: "2.0", id, result: initializeResult() });
       case "ping":
-        return respond(200, { jsonrpc: "2.0", id, result: {} });
-      case "tools/list":
-        return await listResponse(deps.store, agent, token, id);
-      default:
+      case "tools/list": {
+        const response = await methodResponse(message, deps.store, agent, token, id);
+        const saved = await keepAudit(deps.store, {
+          agentId: agent.id,
+          tool: message.method,
+          issueKey: null,
+          outcome: "allowed",
+          reason: null,
+          requestId: requestLabel(id)
+        });
+        if (!saved) {
+          return rpcError(200, id, -32603, FAIL_CLOSED);
+        }
+        return response;
+      }
+      default: {
+        await keepAudit(deps.store, {
+          agentId: agent.id,
+          tool: message.method,
+          issueKey: null,
+          outcome: "denied",
+          reason: "method",
+          requestId: requestLabel(id)
+        });
         return rpcError(200, id, -32601, "Method not found");
+      }
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "call failed";
@@ -543,6 +570,92 @@ async function executeAllowed(call, agent, policy, jira) {
     }
   }
 }
+async function keepAudit(store2, draft) {
+  try {
+    await store2.appendAudit({
+      agentId: draft.agentId,
+      tool: draft.tool,
+      issueKey: draft.issueKey,
+      project: draft.issueKey ? projectKey(draft.issueKey) : null,
+      outcome: draft.outcome,
+      reason: draft.reason,
+      before: draft.before ?? null,
+      after: draft.after ?? null,
+      injectionFlagged: false,
+      requestId: draft.requestId
+    });
+    return true;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "audit failed");
+    return false;
+  }
+}
+function requestLabel(id) {
+  return id === null ? "none" : String(id);
+}
+async function knownAgent(store2, token) {
+  const agent = await resolveToken(store2, token);
+  return agent ? agent.id : "unknown";
+}
+function row(request, agent, outcome, reason, id, after = null, before = null) {
+  return {
+    agentId: agent,
+    tool: request.tool,
+    issueKey: request.issueKey ?? null,
+    outcome,
+    reason,
+    before,
+    after,
+    requestId: requestLabel(id)
+  };
+}
+function isWrite(tool) {
+  return tool === "jira_add_comment" || tool === "jira_transition_issue" || tool === "jira_assign_issue" || tool === "jira_update_fields";
+}
+function writeAfter(call, agentName) {
+  switch (call.tool) {
+    case "jira_add_comment":
+      return { body: `via agent ${agentName}: ${call.body}` };
+    case "jira_transition_issue":
+      return "transitionId" in call.target ? { transitionId: call.target.transitionId } : { toStatus: call.target.toStatus };
+    case "jira_assign_issue":
+      return { accountId: call.accountId };
+    case "jira_update_fields":
+      return call.fields;
+    default:
+      return {};
+  }
+}
+async function readBefore(jira, call) {
+  switch (call.tool) {
+    case "jira_update_fields": {
+      const names = Object.keys(call.fields);
+      const issue = await jira.getIssue(call.issueKey, names);
+      const before = {};
+      for (const name of names) {
+        before[name] = issue.fields[name] ?? null;
+      }
+      return before;
+    }
+    case "jira_assign_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["assignee"]);
+      return { accountId: textField(issue.fields.assignee, "accountId") };
+    }
+    case "jira_transition_issue": {
+      const issue = await jira.getIssue(call.issueKey, ["status"]);
+      return { status: textField(issue.fields.status, "name") };
+    }
+    default:
+      return null;
+  }
+}
+function textField(value, key) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const field = value[key];
+  return typeof field === "string" ? field : null;
+}
 async function handleCall(message, token, id, deps) {
   const params = isRecord(message.params) ? message.params : {};
   const name = typeof params.name === "string" ? params.name : "";
@@ -551,15 +664,19 @@ async function handleCall(message, token, id, deps) {
   const request = parsed ? toDecision(parsed.ok ? targetOf(parsed.call) : parsed.target) : looseRequest(name, args);
   const decision = await nextCall(deps.store, token, request);
   if (decision.kind === "deny" && decision.reason === "auth") {
+    await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
     return rpcError(401, id, -32001, decision.agentMessage);
   }
   if (decision.kind === "deny") {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", decision.reason, id));
     return toolResult(id, envelope("denied", {}, decision.agentMessage), true);
   }
   if (!parsed) {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "tool", id));
     return rpcError(200, id, -32602, "Unknown tool");
   }
   if (!parsed.ok) {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "schema", id));
     return toolResult(id, envelope("error", {}, parsed.message), true);
   }
   if (parsed.call.tool === "jira_update_fields") {
@@ -570,10 +687,15 @@ async function handleCall(message, token, id, deps) {
     }
     const blocked = blockedField(parsed.call.fields, editorPolicy.fieldAllowList);
     if (blocked) {
+      await keepAudit(deps.store, row(request, editor.id, "denied", "field", id));
       return toolResult(id, envelope("denied", {}, fieldDenial(blocked, editorPolicy.fieldAllowList)), true);
     }
   }
   if (decision.kind === "needs_approval") {
+    const saved2 = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
+    if (!saved2) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
     return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
   }
   const agent = await resolveToken(deps.store, token);
@@ -581,11 +703,34 @@ async function handleCall(message, token, id, deps) {
   if (!agent || !policy) {
     const again = await nextCall(deps.store, token, request);
     if (again.kind === "deny" && again.reason === "auth") {
+      await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
       return rpcError(401, id, -32001, again.agentMessage);
     }
     if (again.kind === "deny") {
+      await keepAudit(deps.store, row(request, "unknown", "denied", again.reason, id));
       return toolResult(id, envelope("denied", {}, again.agentMessage), true);
     }
+    return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+  }
+  if (isWrite(parsed.call.tool)) {
+    let before = null;
+    try {
+      before = await readBefore(deps.jira, parsed.call);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, writeAfter(parsed.call, agent.name)));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    try {
+      const result2 = await executeAllowed(parsed.call, agent, policy, deps.jira);
+      await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name), before));
+      return toolResult(id, result2, false);
+    } catch {
+      await keepAudit(deps.store, row(request, agent.id, "uncertain", "uncertain", id, writeAfter(parsed.call, agent.name), before));
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+  }
+  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
+  if (!saved) {
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
   const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
@@ -600,9 +745,31 @@ async function listResponse(store2, agent, token, id) {
   }
   return respond(200, { jsonrpc: "2.0", id, result: { tools: listTools(policy.allowedTools) } });
 }
-async function authError(store2, token, id) {
-  const decision = await nextCall(store2, token, { tool: "guard_whoami" });
+async function methodResponse(message, store2, agent, token, id) {
+  switch (message.method) {
+    case "notifications/initialized":
+      return respond(202);
+    case "initialize":
+      return respond(200, { jsonrpc: "2.0", id, result: initializeResult() });
+    case "ping":
+      return respond(200, { jsonrpc: "2.0", id, result: {} });
+    case "tools/list":
+      return await listResponse(store2, agent, token, id);
+    default:
+      return rpcError(200, id, -32601, "Method not found");
+  }
+}
+async function authError(store2, token, id, tool) {
+  const decision = await nextCall(store2, token, { tool });
   const message = decision.kind === "deny" ? decision.agentMessage : FAIL_CLOSED;
+  await keepAudit(store2, {
+    agentId: "unknown",
+    tool,
+    issueKey: null,
+    outcome: "auth_failed",
+    reason: "auth",
+    requestId: requestLabel(id)
+  });
   return rpcError(401, id, -32001, message);
 }
 async function recordParseFailure(store2) {
@@ -1031,9 +1198,38 @@ async function ensureProofAgent(store2, spec) {
 
 // src/storage/kvs.ts
 var import_node_crypto2 = require("crypto");
+
+// src/storage/memory.ts
+function auditMatches(event, query) {
+  if (query?.agentId !== void 0 && event.agentId !== query.agentId) {
+    return false;
+  }
+  if (query?.outcome !== void 0 && event.outcome !== query.outcome) {
+    return false;
+  }
+  if (query?.issueKey !== void 0 && event.issueKey !== query.issueKey) {
+    return false;
+  }
+  if (query?.from !== void 0 && earlier(event.ts, query.from)) {
+    return false;
+  }
+  if (query?.to !== void 0 && earlier(query.to, event.ts)) {
+    return false;
+  }
+  return true;
+}
+function earlier(left, right) {
+  const start = Date.parse(left);
+  const end = Date.parse(right);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return true;
+  }
+  return start < end;
+}
+
+// src/storage/kvs.ts
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
-var AUDITS = "index:audits";
 var PENDING = "index:pending";
 function createKvsStore(kv) {
   return {
@@ -1070,12 +1266,18 @@ function createKvsStore(kv) {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
-      await addId(kv, AUDITS, event.id);
       return event;
     },
     async listAudits(query) {
-      const events = await readAll(kv, AUDITS, auditKey);
-      return events.filter((event) => matchesAudit(event, query));
+      const keys = await kv.list("audit:");
+      const records = [];
+      for (const key of keys) {
+        const event = await readRecord(kv, key);
+        if (event && matchesAudit(event, query)) {
+          records.push(event);
+        }
+      }
+      return records;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -1170,16 +1372,7 @@ async function readAll(kv, index, keyFor) {
   return records;
 }
 function matchesAudit(event, query) {
-  if (query?.agentId !== void 0 && event.agentId !== query.agentId) {
-    return false;
-  }
-  if (query?.outcome !== void 0 && event.outcome !== query.outcome) {
-    return false;
-  }
-  if (query?.issueKey !== void 0 && event.issueKey !== query.issueKey) {
-    return false;
-  }
-  return true;
+  return auditMatches(event, query);
 }
 
 // src/product/handler.ts
@@ -1189,6 +1382,22 @@ var store = createKvsStore({
   },
   async set(key, value) {
     await import_kvs.kvs.set(key, value);
+  },
+  async list(prefix) {
+    const keys = [];
+    let cursor;
+    do {
+      let query = import_kvs.kvs.query().where("key", import_kvs.WhereConditions.beginsWith(prefix)).limit(100);
+      if (cursor) {
+        query = query.cursor(cursor);
+      }
+      const page = await query.getMany();
+      for (const result of page.results) {
+        keys.push(result.key);
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return keys;
   }
 });
 async function mcpHandler(request) {

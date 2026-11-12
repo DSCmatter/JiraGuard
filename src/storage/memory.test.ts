@@ -81,6 +81,8 @@ describe("agent records", () => {
     assert.deepEqual(await store.listAudits({ outcome: "denied" }), [other]);
     assert.deepEqual(await store.listAudits({ issueKey: "PROJ-1" }), [event]);
     assert.equal((await store.listAudits()).length, 2);
+    assert.deepEqual(await store.listAudits({ agentId: "agt_1", from: event.ts, to: event.ts }), [event]);
+    assert.deepEqual(await store.listAudits({ to: "2000-01-01T00:00:00.000Z" }), []);
 
     const action = await store.createPending({
       agentId: "agt_1",
@@ -94,5 +96,24 @@ describe("agent records", () => {
     assert.deepEqual(await store.getPending(action.id), action);
     assert.deepEqual(await store.listPending({ status: "pending" }), [action]);
     assert.deepEqual(await store.listPending({ status: "approved" }), []);
+  });
+
+  it("keeps an event that is later than an offset lower bound", async () => {
+    const store = createMemoryStore();
+    const event = await store.appendAudit({
+      ts: "2026-11-12T12:00:00.000Z",
+      agentId: "agt_1",
+      tool: "jira_get_issue",
+      issueKey: "PROJ-1",
+      project: "PROJ",
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: false,
+      requestId: "req_z",
+    });
+    const listed = await store.listAudits({ from: "2026-11-12T13:00:00.000+02:00" });
+    assert.deepEqual(listed, [event]);
   });
 });
