@@ -1,5 +1,5 @@
 import { asApp, route } from "@forge/api";
-import { kvs, WhereConditions } from "@forge/kvs";
+import { ForgeKvsAPIError, kvs, WhereConditions } from "@forge/kvs";
 import { handleMcp, type WebtriggerRequest, type WebtriggerResponse } from "../gate/handle.ts";
 import { createCloudJira, type JiraHttp } from "../jira/cloud.ts";
 import { ensureProofAgent } from "./proof.ts";
@@ -11,6 +11,20 @@ const store = createKvsStore({
   },
   async set(key, value) {
     await kvs.set(key, value);
+  },
+  async create(key, value) {
+    try {
+      await kvs.set(key, value, { keyPolicy: "FAIL_IF_EXISTS" });
+      return true;
+    } catch (error) {
+      if (error instanceof ForgeKvsAPIError && error.code === "KEY_CONFLICT") {
+        return false;
+      }
+      throw error;
+    }
+  },
+  async delete(key) {
+    await kvs.delete(key);
   },
   async list(prefix) {
     const keys: string[] = [];

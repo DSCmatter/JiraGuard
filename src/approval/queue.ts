@@ -9,6 +9,7 @@ export type QueueRow = {
   issueKey: string;
   tool: string;
   diff: PendingAction["diff"];
+  status: "pending" | "uncertain";
 };
 
 export type DecisionResult = { ok: true } | { ok: false; reason: string };
@@ -18,9 +19,12 @@ const ISSUE_GONE = "That issue is no longer available.";
 const ISSUE_CHANGED = "The issue changed since this action was requested.";
 
 export async function listApprovalQueue(store: RecordStore): Promise<QueueRow[]> {
-  const waiting = await store.listPending({ status: "pending" });
+  const actions = await store.listPending();
   const rows: QueueRow[] = [];
-  for (const action of waiting) {
+  for (const action of actions) {
+    if (action.status !== "pending" && action.status !== "uncertain") {
+      continue;
+    }
     const agent = await store.getAgent(action.agentId);
     rows.push({
       id: action.id,
@@ -29,6 +33,7 @@ export async function listApprovalQueue(store: RecordStore): Promise<QueueRow[]>
       issueKey: action.issueKey,
       tool: action.tool,
       diff: action.diff,
+      status: action.status,
     });
   }
   return rows;
@@ -68,6 +73,7 @@ export async function approvePending(
   try {
     await executeAllowed(call, agent, policy, jira);
   } catch {
+    await store.finishPending(action.id, "uncertain", decidedBy);
     await store.appendAudit(audit(action, "uncertain", "uncertain", storedBefore, afterFrom(action)));
     return { ok: false, reason: "The write did not finish. Jira may already have changed." };
   }

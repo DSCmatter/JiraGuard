@@ -171,6 +171,58 @@ describe("approval queue", () => {
     assert.equal(transitions, 0);
   });
 
+  it("keeps a failed write visible and does not run it again", async () => {
+    const store = createMemoryStore();
+    const { token } = await seedProofAgent(store, {
+      name: "proof",
+      description: "",
+      createdBy: "admin",
+      allowedTools: ["jira_transition_issue"],
+      allowedProjects: ["ALPHA"],
+      writeMode: "approve",
+      fieldAllowList: [],
+      rateLimit: { reads: 10, writes: 10, windowSeconds: 60 },
+      maxResults: 10,
+    });
+    let transitions = 0;
+    const jira: JiraWork = {
+      async search() {
+        throw new Error("unexpected");
+      },
+      async getIssue() {
+        return { key: "ALPHA-1", fields: { status: { name: "To Do" } } };
+      },
+      async listTransitions() {
+        return [];
+      },
+      async addComment() {
+        throw new Error("unexpected");
+      },
+      async transition() {
+        transitions += 1;
+        throw new Error("Jira 500");
+      },
+      async assign() {
+        throw new Error("unexpected");
+      },
+      async updateFields() {
+        throw new Error("unexpected");
+      },
+    };
+    await handleMcp(call(token, 1, { issueKey: "ALPHA-1", toStatus: "Done" }), { store, jira });
+    const id = (await listApprovalQueue(store))[0]!.id;
+    const failed = await approvePending(store, jira, id, "admin");
+    assert.equal(failed.ok, false);
+    const visible = await listApprovalQueue(store);
+    assert.equal(visible.length, 1);
+    assert.equal(visible[0]?.status, "uncertain");
+    assert.equal((await store.getPending(id))?.status, "uncertain");
+    const again = await approvePending(store, jira, id, "admin");
+    assert.equal(again.ok, false);
+    assert.equal(transitions, 1);
+    assert.equal((await store.listAudits()).some((event) => event.outcome === "uncertain"), true);
+  });
+
   it("runs the transition once when two approvals race", async () => {
     const { store, token, jira, transitions, release } = await heldTransition();
     const id = (await listApprovalQueue(store))[0]!.id;

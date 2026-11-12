@@ -64,7 +64,7 @@ export type RecordStore = {
   createPending(input: NewPending): Promise<PendingAction>;
   getPending(id: string): Promise<PendingAction | null>;
   listPending(query?: PendingQuery): Promise<PendingAction[]>;
-  finishPending(id: string, status: "approved" | "rejected" | "expired", decidedBy: string): Promise<PendingAction | null>;
+  finishPending(id: string, status: "approved" | "rejected" | "expired" | "uncertain", decidedBy: string): Promise<PendingAction | null>;
   claimPending(id: string): Promise<PendingAction | null>;
 };
 
@@ -164,7 +164,8 @@ export function createMemoryStore(): RecordStore {
       if (!found) {
         return null;
       }
-      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected");
+      const claimed =
+        found.status === "claimed" && (status === "approved" || status === "rejected" || status === "uncertain");
       const expire = found.status === "pending" && status === "expired";
       if (!claimed && !expire) {
         return null;

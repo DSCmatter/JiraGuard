@@ -1284,7 +1284,6 @@ function earlier(left, right) {
 // src/storage/kvs.ts
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
-var PENDING = "index:pending";
 function createKvsStore(kv) {
   return {
     async putAgent(agent) {
@@ -1336,22 +1335,34 @@ function createKvsStore(kv) {
     async createPending(input) {
       const action = pendingFrom(input);
       await kv.set(pendingKey(action.id), action);
-      await addId(kv, PENDING, action.id);
       return action;
     },
     async getPending(id) {
       return readRecord(kv, pendingKey(id));
     },
     async listPending(query) {
-      const actions = await readAll(kv, PENDING, pendingKey);
-      return actions.filter((action) => query?.status === void 0 || action.status === query.status);
+      const keys = await kv.list("pending:");
+      const actions = [];
+      for (const key of keys) {
+        const action = await readRecord(kv, key);
+        if (action && (query?.status === void 0 || action.status === query.status)) {
+          actions.push(action);
+        }
+      }
+      return actions;
     },
     async finishPending(id, status, decidedBy) {
+      if (status === "expired") {
+        const locked = await kv.create(claimKey(id), { id });
+        if (!locked) {
+          return null;
+        }
+      }
       const found = await readRecord(kv, pendingKey(id));
       if (!found) {
         return null;
       }
-      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected");
+      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected" || status === "uncertain");
       const expire = found.status === "pending" && status === "expired";
       if (!claimed && !expire) {
         return null;
@@ -1362,21 +1373,33 @@ function createKvsStore(kv) {
         decidedBy,
         decidedAt: (/* @__PURE__ */ new Date()).toISOString()
       };
-      await kv.set(pendingKey(id), finished);
+      try {
+        await kv.set(pendingKey(id), finished);
+      } catch (error) {
+        if (status === "expired") {
+          await kv.delete(claimKey(id));
+        }
+        throw error;
+      }
       return finished;
     },
     async claimPending(id) {
+      const locked = await kv.create(claimKey(id), { id });
+      if (!locked) {
+        return null;
+      }
       const found = await readRecord(kv, pendingKey(id));
       if (!found || found.status !== "pending") {
         return null;
       }
       const claimed = { ...found, status: "claimed" };
-      await kv.set(pendingKey(id), claimed);
-      const stored = await readRecord(kv, pendingKey(id));
-      if (!stored || stored.status !== "claimed") {
-        return null;
+      try {
+        await kv.set(pendingKey(id), claimed);
+      } catch (error) {
+        await kv.delete(claimKey(id));
+        throw error;
       }
-      return stored;
+      return claimed;
     }
   };
 }
@@ -1397,6 +1420,9 @@ function auditKey(id) {
 }
 function pendingKey(id) {
   return `pending:${id}`;
+}
+function claimKey(id) {
+  return `claim:${id}`;
 }
 function auditFrom(input) {
   return {
@@ -1468,6 +1494,20 @@ var store = createKvsStore({
   },
   async set(key, value) {
     await import_kvs.kvs.set(key, value);
+  },
+  async create(key, value) {
+    try {
+      await import_kvs.kvs.set(key, value, { keyPolicy: "FAIL_IF_EXISTS" });
+      return true;
+    } catch (error) {
+      if (error instanceof import_kvs.ForgeKvsAPIError && error.code === "KEY_CONFLICT") {
+        return false;
+      }
+      throw error;
+    }
+  },
+  async delete(key) {
+    await import_kvs.kvs.delete(key);
   },
   async list(prefix) {
     const keys = [];
