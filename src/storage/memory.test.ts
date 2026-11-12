@@ -97,4 +97,23 @@ describe("agent records", () => {
     assert.deepEqual(await store.listPending({ status: "pending" }), [action]);
     assert.deepEqual(await store.listPending({ status: "approved" }), []);
   });
+
+  it("keeps an event that is later than an offset lower bound", async () => {
+    const store = createMemoryStore();
+    const event = await store.appendAudit({
+      ts: "2026-11-12T12:00:00.000Z",
+      agentId: "agt_1",
+      tool: "jira_get_issue",
+      issueKey: "PROJ-1",
+      project: "PROJ",
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: false,
+      requestId: "req_z",
+    });
+    const listed = await store.listAudits({ from: "2026-11-12T13:00:00.000+02:00" });
+    assert.deepEqual(listed, [event]);
+  });
 });

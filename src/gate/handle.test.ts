@@ -380,6 +380,31 @@ describe("handleMcp", () => {
     assert.equal(result.protocolVersion, "2025-11-25");
   });
 
+  it("returns an initialize error when the audit cannot be stored", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store);
+    store.appendAudit = async () => {
+      throw new Error("full");
+    };
+    const response = await handleMcp(
+      {
+        method: "POST",
+        headers: { authorization: [`Bearer ${token}`] },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 13,
+          method: "initialize",
+          params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "proof", version: "0" } },
+        }),
+      },
+      { store, jira: port() },
+    );
+    const body = parsed(response);
+    const error = body.error as { code?: number };
+    assert.equal(error.code, -32603);
+    assert.equal("result" in body, false);
+  });
+
   it("records an allowed read, a denial, and an auth failure", async () => {
     const store = createMemoryStore();
     const { token, agentId } = await seed(store);

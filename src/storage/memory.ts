@@ -29,13 +29,22 @@ export function auditMatches(event: AuditEvent, query: AuditQuery | undefined): 
   if (query?.issueKey !== undefined && event.issueKey !== query.issueKey) {
     return false;
   }
-  if (query?.from !== undefined && event.ts < query.from) {
+  if (query?.from !== undefined && earlier(event.ts, query.from)) {
     return false;
   }
-  if (query?.to !== undefined && event.ts > query.to) {
+  if (query?.to !== undefined && earlier(query.to, event.ts)) {
     return false;
   }
   return true;
+}
+
+function earlier(left: string, right: string): boolean {
+  const start = Date.parse(left);
+  const end = Date.parse(right);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return true;
+  }
+  return start < end;
 }
 
 export type PendingQuery = {

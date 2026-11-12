@@ -422,7 +422,7 @@ async function handleMcp(request, deps) {
           requestId: requestLabel(id)
         });
         if (!saved) {
-          return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+          return rpcError(200, id, -32603, FAIL_CLOSED);
         }
         return response;
       }
@@ -1167,19 +1167,26 @@ function auditMatches(event, query) {
   if (query?.issueKey !== void 0 && event.issueKey !== query.issueKey) {
     return false;
   }
-  if (query?.from !== void 0 && event.ts < query.from) {
+  if (query?.from !== void 0 && earlier(event.ts, query.from)) {
     return false;
   }
-  if (query?.to !== void 0 && event.ts > query.to) {
+  if (query?.to !== void 0 && earlier(query.to, event.ts)) {
     return false;
   }
   return true;
+}
+function earlier(left, right) {
+  const start = Date.parse(left);
+  const end = Date.parse(right);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return true;
+  }
+  return start < end;
 }
 
 // src/storage/kvs.ts
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
-var AUDITS = "index:audits";
 var PENDING = "index:pending";
 function createKvsStore(kv) {
   return {
@@ -1216,12 +1223,18 @@ function createKvsStore(kv) {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
-      await addId(kv, AUDITS, event.id);
       return event;
     },
     async listAudits(query) {
-      const events = await readAll(kv, AUDITS, auditKey);
-      return events.filter((event) => matchesAudit(event, query));
+      const keys = await kv.list("audit:");
+      const records = [];
+      for (const key of keys) {
+        const event = await readRecord(kv, key);
+        if (event && matchesAudit(event, query)) {
+          records.push(event);
+        }
+      }
+      return records;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -1326,6 +1339,22 @@ var store = createKvsStore({
   },
   async set(key, value) {
     await import_kvs.kvs.set(key, value);
+  },
+  async list(prefix) {
+    const keys = [];
+    let cursor;
+    do {
+      let query = import_kvs.kvs.query().where("key", import_kvs.WhereConditions.beginsWith(prefix)).limit(100);
+      if (cursor) {
+        query = query.cursor(cursor);
+      }
+      const page = await query.getMany();
+      for (const result of page.results) {
+        keys.push(result.key);
+      }
+      cursor = page.nextCursor;
+    } while (cursor);
+    return keys;
   }
 });
 async function mcpHandler(request) {

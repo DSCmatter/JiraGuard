@@ -391,7 +391,7 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
           requestId: requestLabel(id),
         });
         if (!saved) {
-          return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+          return rpcError(200, id, -32603, FAIL_CLOSED);
         }
         return response;
       }
