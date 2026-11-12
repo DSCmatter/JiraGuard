@@ -81,6 +81,8 @@ describe("agent records", () => {
     assert.deepEqual(await store.listAudits({ outcome: "denied" }), [other]);
     assert.deepEqual(await store.listAudits({ issueKey: "PROJ-1" }), [event]);
     assert.equal((await store.listAudits()).length, 2);
+    assert.deepEqual(await store.listAudits({ agentId: "agt_1", from: event.ts, to: event.ts }), [event]);
+    assert.deepEqual(await store.listAudits({ to: "2000-01-01T00:00:00.000Z" }), []);
 
     const action = await store.createPending({
       agentId: "agt_1",

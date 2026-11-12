@@ -15,7 +15,28 @@ export type AuditQuery = {
   agentId?: string;
   outcome?: AuditOutcome;
   issueKey?: string;
+  from?: string;
+  to?: string;
 };
+
+export function auditMatches(event: AuditEvent, query: AuditQuery | undefined): boolean {
+  if (query?.agentId !== undefined && event.agentId !== query.agentId) {
+    return false;
+  }
+  if (query?.outcome !== undefined && event.outcome !== query.outcome) {
+    return false;
+  }
+  if (query?.issueKey !== undefined && event.issueKey !== query.issueKey) {
+    return false;
+  }
+  if (query?.from !== undefined && event.ts < query.from) {
+    return false;
+  }
+  if (query?.to !== undefined && event.ts > query.to) {
+    return false;
+  }
+  return true;
+}
 
 export type PendingQuery = {
   status?: PendingStatus;
@@ -100,20 +121,7 @@ export function createMemoryStore(): RecordStore {
       return copy(event);
     },
     async listAudits(query) {
-      return audits
-        .filter((event) => {
-          if (query?.agentId !== undefined && event.agentId !== query.agentId) {
-            return false;
-          }
-          if (query?.outcome !== undefined && event.outcome !== query.outcome) {
-            return false;
-          }
-          if (query?.issueKey !== undefined && event.issueKey !== query.issueKey) {
-            return false;
-          }
-          return true;
-        })
-        .map((event) => copy(event));
+      return audits.filter((event) => auditMatches(event, query)).map((event) => copy(event));
     },
     async createPending(input) {
       const action: PendingAction = {

@@ -160,7 +160,10 @@ describe("handleMcp", () => {
     assert.equal(String(content.message).includes("BETA"), false);
     assert.equal(response.body.includes("BETA"), false);
     assert.equal(getCalled, false);
-    assert.deepEqual(await store.listAudits(), []);
+    const audits = await store.listAudits();
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.outcome, "denied");
+    assert.equal(audits[0]?.issueKey, "BETA-4");
   });
 
   it("keeps a malformed forbidden key on the project denial", async () => {
@@ -320,7 +323,9 @@ describe("handleMcp", () => {
 
     assert.equal(response.statusCode, 401);
     assert.equal(error.message, decision.agentMessage);
-    assert.deepEqual(await store.listAudits(), []);
+    const audits = await store.listAudits({ outcome: "auth_failed" });
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0]?.agentId, "unknown");
   });
 
   it("rejects a tools call whose jsonrpc version is not 2.0", async () => {
@@ -373,6 +378,48 @@ describe("handleMcp", () => {
 
     assert.equal(response.statusCode, 200);
     assert.equal(result.protocolVersion, "2025-11-25");
+  });
+
+  it("records an allowed read, a denial, and an auth failure", async () => {
+    const store = createMemoryStore();
+    const { token, agentId } = await seed(store);
+    const jira = port({
+      async getIssue() {
+        return { key: "ALPHA-1", fields: { summary: "notes" } };
+      },
+    });
+    await handleMcp(call(token, 20, "jira_get_issue", { issueKey: "ALPHA-1" }), { store, jira });
+    await handleMcp(call(token, 21, "jira_get_issue", { issueKey: "BETA-4" }), { store, jira });
+    await handleMcp(call(null, 22, "jira_get_issue", { issueKey: "ALPHA-1" }), { store, jira });
+
+    const mine = await store.listAudits({ agentId });
+    assert.deepEqual(
+      mine.map((event) => event.outcome),
+      ["allowed", "denied"],
+    );
+    const failed = await store.listAudits({ outcome: "auth_failed" });
+    assert.equal(failed.length, 1);
+    const allowed = await store.listAudits({ agentId, outcome: "allowed", from: mine[0]?.ts, to: mine[0]?.ts });
+    assert.equal(allowed.length, 1);
+    assert.equal(allowed[0]?.tool, "jira_get_issue");
+  });
+
+  it("does not read Jira when the audit cannot be stored", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store);
+    store.appendAudit = async () => {
+      throw new Error("full");
+    };
+    let called = false;
+    const jira = port({
+      async getIssue() {
+        called = true;
+        return { key: "ALPHA-1", fields: {} };
+      },
+    });
+    const response = await handleMcp(call(token, 23, "jira_get_issue", { issueKey: "ALPHA-1" }), { store, jira });
+    assert.equal(structured(response).status, "error");
+    assert.equal(called, false);
   });
 
   it("returns a JSON-RPC parse error and records one audit", async () => {

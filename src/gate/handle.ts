@@ -1,5 +1,5 @@
 import { registerAgent, resolveToken } from "../auth/token.ts";
-import type { AgentRecord, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
+import type { AgentRecord, AuditOutcome, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
 import { nextCall, searchProjectJql } from "../policy/decide.ts";
 import type { DecisionRequest } from "../policy/decide.ts";
 import type { RecordStore } from "../storage/memory.ts";
@@ -355,6 +355,14 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
     return rpcError(400, null, -32700, "Parse error");
   }
   if (!isRecord(message) || message.jsonrpc !== "2.0" || typeof message.method !== "string") {
+    await keepAudit(deps.store, {
+      agentId: "unknown",
+      tool: "jsonrpc",
+      issueKey: null,
+      outcome: "denied",
+      reason: "request",
+      requestId: requestLabel(rpcId(message)),
+    });
     return rpcError(200, rpcId(message), -32600, "Invalid Request");
   }
 
@@ -366,19 +374,38 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
     }
     const agent = await resolveToken(deps.store, token);
     if (!agent) {
-      return await authError(deps.store, token, id);
+      return await authError(deps.store, token, id, message.method);
     }
     switch (message.method) {
       case "notifications/initialized":
-        return respond(202);
       case "initialize":
-        return respond(200, { jsonrpc: "2.0", id, result: initializeResult() });
       case "ping":
-        return respond(200, { jsonrpc: "2.0", id, result: {} });
-      case "tools/list":
-        return await listResponse(deps.store, agent, token, id);
-      default:
+      case "tools/list": {
+        const response = await methodResponse(message, deps.store, agent, token, id);
+        const saved = await keepAudit(deps.store, {
+          agentId: agent.id,
+          tool: message.method,
+          issueKey: null,
+          outcome: "allowed",
+          reason: null,
+          requestId: requestLabel(id),
+        });
+        if (!saved) {
+          return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+        }
+        return response;
+      }
+      default: {
+        await keepAudit(deps.store, {
+          agentId: agent.id,
+          tool: message.method,
+          issueKey: null,
+          outcome: "denied",
+          reason: "method",
+          requestId: requestLabel(id),
+        });
         return rpcError(200, id, -32601, "Method not found");
+      }
     }
   } catch (error) {
     const detail = error instanceof Error ? error.message : "call failed";
@@ -522,6 +549,91 @@ async function executeAllowed(
   }
 }
 
+async function keepAudit(
+  store: RecordStore,
+  draft: {
+    agentId: string;
+    tool: string;
+    issueKey: string | null;
+    outcome: AuditOutcome;
+    reason: string | null;
+    before?: Record<string, Json> | null;
+    after?: Record<string, Json> | null;
+    requestId: string;
+  },
+): Promise<boolean> {
+  try {
+    await store.appendAudit({
+      agentId: draft.agentId,
+      tool: draft.tool,
+      issueKey: draft.issueKey,
+      project: draft.issueKey ? projectKey(draft.issueKey) : null,
+      outcome: draft.outcome,
+      reason: draft.reason,
+      before: draft.before ?? null,
+      after: draft.after ?? null,
+      injectionFlagged: false,
+      requestId: draft.requestId,
+    });
+    return true;
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : "audit failed");
+    return false;
+  }
+}
+
+function requestLabel(id: RpcId): string {
+  return id === null ? "none" : String(id);
+}
+
+async function knownAgent(store: RecordStore, token: string): Promise<string> {
+  const agent = await resolveToken(store, token);
+  return agent ? agent.id : "unknown";
+}
+
+function row(
+  request: DecisionRequest,
+  agent: string,
+  outcome: AuditOutcome,
+  reason: string | null,
+  id: RpcId,
+  after: Record<string, Json> | null = null,
+) {
+  return {
+    agentId: agent,
+    tool: request.tool,
+    issueKey: request.issueKey ?? null,
+    outcome,
+    reason,
+    after,
+    requestId: requestLabel(id),
+  };
+}
+
+function isWrite(tool: string): boolean {
+  return (
+    tool === "jira_add_comment" ||
+    tool === "jira_transition_issue" ||
+    tool === "jira_assign_issue" ||
+    tool === "jira_update_fields"
+  );
+}
+
+function writeAfter(call: ToolCall, agentName: string): Record<string, Json> {
+  switch (call.tool) {
+    case "jira_add_comment":
+      return { body: `via agent ${agentName}: ${call.body}` };
+    case "jira_transition_issue":
+      return "transitionId" in call.target ? { transitionId: call.target.transitionId } : { toStatus: call.target.toStatus };
+    case "jira_assign_issue":
+      return { accountId: call.accountId };
+    case "jira_update_fields":
+      return call.fields;
+    default:
+      return {};
+  }
+}
+
 async function handleCall(
   message: Record<string, unknown>,
   token: string,
@@ -536,15 +648,19 @@ async function handleCall(
   const decision = await nextCall(deps.store, token, request);
 
   if (decision.kind === "deny" && decision.reason === "auth") {
+    await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
     return rpcError(401, id, -32001, decision.agentMessage);
   }
   if (decision.kind === "deny") {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", decision.reason, id));
     return toolResult(id, envelope("denied", {}, decision.agentMessage), true);
   }
   if (!parsed) {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "tool", id));
     return rpcError(200, id, -32602, "Unknown tool");
   }
   if (!parsed.ok) {
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "schema", id));
     return toolResult(id, envelope("error", {}, parsed.message), true);
   }
   if (parsed.call.tool === "jira_update_fields") {
@@ -555,10 +671,15 @@ async function handleCall(
     }
     const blocked = blockedField(parsed.call.fields, editorPolicy.fieldAllowList);
     if (blocked) {
+      await keepAudit(deps.store, row(request, editor.id, "denied", "field", id));
       return toolResult(id, envelope("denied", {}, fieldDenial(blocked, editorPolicy.fieldAllowList)), true);
     }
   }
   if (decision.kind === "needs_approval") {
+    const saved = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
+    if (!saved) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
     return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
   }
 
@@ -567,14 +688,25 @@ async function handleCall(
   if (!agent || !policy) {
     const again = await nextCall(deps.store, token, request);
     if (again.kind === "deny" && again.reason === "auth") {
+      await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
       return rpcError(401, id, -32001, again.agentMessage);
     }
     if (again.kind === "deny") {
+      await keepAudit(deps.store, row(request, "unknown", "denied", again.reason, id));
       return toolResult(id, envelope("denied", {}, again.agentMessage), true);
     }
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
+  if (!isWrite(parsed.call.tool)) {
+    const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
+    if (!saved) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+  }
   const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
+  if (isWrite(parsed.call.tool)) {
+    await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name)));
+  }
   return toolResult(id, result, false);
 }
 
@@ -588,9 +720,38 @@ async function listResponse(store: RecordStore, agent: AgentRecord, token: strin
   return respond(200, { jsonrpc: "2.0", id, result: { tools: listTools(policy.allowedTools) } });
 }
 
-async function authError(store: RecordStore, token: string, id: RpcId): Promise<WebtriggerResponse> {
-  const decision = await nextCall(store, token, { tool: "guard_whoami" });
+async function methodResponse(
+  message: Record<string, unknown>,
+  store: RecordStore,
+  agent: AgentRecord,
+  token: string,
+  id: RpcId,
+): Promise<WebtriggerResponse> {
+  switch (message.method) {
+    case "notifications/initialized":
+      return respond(202);
+    case "initialize":
+      return respond(200, { jsonrpc: "2.0", id, result: initializeResult() });
+    case "ping":
+      return respond(200, { jsonrpc: "2.0", id, result: {} });
+    case "tools/list":
+      return await listResponse(store, agent, token, id);
+    default:
+      return rpcError(200, id, -32601, "Method not found");
+  }
+}
+
+async function authError(store: RecordStore, token: string, id: RpcId, tool: string): Promise<WebtriggerResponse> {
+  const decision = await nextCall(store, token, { tool });
   const message = decision.kind === "deny" ? decision.agentMessage : FAIL_CLOSED;
+  await keepAudit(store, {
+    agentId: "unknown",
+    tool,
+    issueKey: null,
+    outcome: "auth_failed",
+    reason: "auth",
+    requestId: requestLabel(id),
+  });
   return rpcError(401, id, -32001, message);
 }
 

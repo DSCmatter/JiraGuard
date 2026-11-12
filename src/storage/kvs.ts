@@ -8,7 +8,7 @@ import type {
   PendingAction,
   PolicyRecord,
 } from "../domain/records.ts";
-import type { AuditQuery, PendingQuery, RecordStore } from "./memory.ts";
+import { auditMatches, type AuditQuery, type PendingQuery, type RecordStore } from "./memory.ts";
 
 export type KeyValue = {
   get(key: string): Promise<unknown>;
@@ -168,14 +168,5 @@ async function readAll<T>(kv: KeyValue, index: string, keyFor: (id: string) => s
 }
 
 function matchesAudit(event: AuditEvent, query: AuditQuery | undefined): boolean {
-  if (query?.agentId !== undefined && event.agentId !== query.agentId) {
-    return false;
-  }
-  if (query?.outcome !== undefined && event.outcome !== query.outcome) {
-    return false;
-  }
-  if (query?.issueKey !== undefined && event.issueKey !== query.issueKey) {
-    return false;
-  }
-  return true;
+  return auditMatches(event, query);
 }
