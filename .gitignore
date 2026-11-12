@@ -5,6 +5,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+.cursor/
 
 # Secrets
 .env
@@ -25,3 +26,6 @@ coverage/
 # OS
 .DS_Store
 Thumbs.db
+
+#other
+docs/COMPETITIVE_LANDSCAPE.md
