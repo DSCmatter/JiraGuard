@@ -13,12 +13,13 @@ import { auditMatches, type AuditQuery, type PendingQuery, type RecordStore } fr
 export type KeyValue = {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown): Promise<void>;
+  create(key: string, value: unknown): Promise<boolean>;
+  delete(key: string): Promise<void>;
   list(prefix: string): Promise<string[]>;
 };
 
 const AGENTS = "index:agents";
 const POLICIES = "index:policies";
-const PENDING = "index:pending";
 
 export function createKvsStore(kv: KeyValue): RecordStore {
   return {
@@ -71,15 +72,72 @@ export function createKvsStore(kv: KeyValue): RecordStore {
     async createPending(input) {
       const action = pendingFrom(input);
       await kv.set(pendingKey(action.id), action);
-      await addId(kv, PENDING, action.id);
       return action;
     },
     async getPending(id) {
       return readRecord<PendingAction>(kv, pendingKey(id));
     },
     async listPending(query) {
-      const actions = await readAll<PendingAction>(kv, PENDING, pendingKey);
-      return actions.filter((action) => query?.status === undefined || action.status === query.status);
+      const keys = await kv.list("pending:");
+      const actions: PendingAction[] = [];
+      for (const key of keys) {
+        const action = await readRecord<PendingAction>(kv, key);
+        if (action && (query?.status === undefined || action.status === query.status)) {
+          actions.push(action);
+        }
+      }
+      return actions;
+    },
+    async finishPending(id, status, decidedBy) {
+      if (status === "expired") {
+        const locked = await kv.create(claimKey(id), { id });
+        if (!locked) {
+          return null;
+        }
+      }
+      const found = await readRecord<PendingAction>(kv, pendingKey(id));
+      if (!found) {
+        return null;
+      }
+      const claimed =
+        found.status === "claimed" && (status === "approved" || status === "rejected" || status === "uncertain");
+      const expire = found.status === "pending" && status === "expired";
+      if (!claimed && !expire) {
+        return null;
+      }
+      const finished: PendingAction = {
+        ...found,
+        status,
+        decidedBy,
+        decidedAt: new Date().toISOString(),
+      };
+      try {
+        await kv.set(pendingKey(id), finished);
+      } catch (error) {
+        if (status === "expired") {
+          await kv.delete(claimKey(id));
+        }
+        throw error;
+      }
+      return finished;
+    },
+    async claimPending(id) {
+      const locked = await kv.create(claimKey(id), { id });
+      if (!locked) {
+        return null;
+      }
+      const found = await readRecord<PendingAction>(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const claimed: PendingAction = { ...found, status: "claimed" };
+      try {
+        await kv.set(pendingKey(id), claimed);
+      } catch (error) {
+        await kv.delete(claimKey(id));
+        throw error;
+      }
+      return claimed;
     },
   };
 }
@@ -106,6 +164,10 @@ function auditKey(id: string): string {
 
 function pendingKey(id: string): string {
   return `pending:${id}`;
+}
+
+function claimKey(id: string): string {
+  return `claim:${id}`;
 }
 
 function auditFrom(input: NewAudit): AuditEvent {

@@ -279,9 +279,24 @@ describe("handleMcp", () => {
     assert.equal(result.isError, false);
     assert.equal(content.status, "pending_approval");
     assert.deepEqual(data.diff, [{ field: "body", before: null, after: "shipped" }]);
-    assert.equal(response.body.includes("actionId"), false);
+    assert.match(String(content.message), /^Held for approval \(action act_/);
     assert.equal(commented, false);
-    assert.deepEqual(await store.listPending(), []);
+    assert.equal((await store.listPending({ status: "pending" })).length, 1);
+  });
+
+  it("expires the held action when the pending audit cannot be stored", async () => {
+    const store = createMemoryStore();
+    const { token } = await seed(store, { writeMode: "approve", allowedTools: ["jira_add_comment"] });
+    store.appendAudit = async () => {
+      throw new Error("full");
+    };
+    const response = await handleMcp(call(token, 32, "jira_add_comment", { issueKey: "ALPHA-1", body: "wait" }), {
+      store,
+      jira: port(),
+    });
+    assert.equal(structured(response).status, "error");
+    assert.equal((await store.listPending({ status: "pending" })).length, 0);
+    assert.equal((await store.listPending())[0]?.status, "expired");
   });
 
   it("sends the agent name on an allowed comment", async () => {

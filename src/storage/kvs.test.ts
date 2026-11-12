@@ -11,6 +11,16 @@ function memoryKv(): KeyValue {
     async set(key, value) {
       values.set(key, value);
     },
+    async create(key, value) {
+      if (values.has(key)) {
+        return false;
+      }
+      values.set(key, value);
+      return true;
+    },
+    async delete(key) {
+      values.delete(key);
+    },
     async list(prefix) {
       return [...values.keys()].filter((key) => key.startsWith(prefix));
     },
@@ -62,6 +72,16 @@ describe("kvs store", () => {
         values.set(key, value);
         release();
       },
+      async create(key, value) {
+        if (values.has(key)) {
+          return false;
+        }
+        values.set(key, value);
+        return true;
+      },
+      async delete(key) {
+        values.delete(key);
+      },
       async list(prefix) {
         return [...values.keys()].filter((key) => key.startsWith(prefix));
       },
@@ -83,5 +103,35 @@ describe("kvs store", () => {
     ]);
     const listed = await store.listAudits();
     assert.deepEqual(listed.map((event) => event.issueKey).sort(), ["SPIKE-1", "SPIKE-2"]);
+  });
+
+  it("keeps both actions when two holds overlap", async () => {
+    const store = createKvsStore(memoryKv());
+    const draft = {
+      agentId: "agt_1",
+      tool: "jira_add_comment",
+      args: {},
+      diff: [],
+    };
+    await Promise.all([
+      store.createPending({ ...draft, issueKey: "ALPHA-1" }),
+      store.createPending({ ...draft, issueKey: "ALPHA-2" }),
+    ]);
+    const listed = await store.listPending({ status: "pending" });
+    assert.deepEqual(listed.map((action) => action.issueKey).sort(), ["ALPHA-1", "ALPHA-2"]);
+  });
+
+  it("lets one claim win when two claims overlap", async () => {
+    const store = createKvsStore(memoryKv());
+    const action = await store.createPending({
+      agentId: "agt_1",
+      tool: "jira_transition_issue",
+      args: {},
+      issueKey: "ALPHA-1",
+      diff: [],
+    });
+    const claimed = await Promise.all([store.claimPending(action.id), store.claimPending(action.id)]);
+    assert.equal(claimed.filter((row) => row !== null).length, 1);
+    assert.equal((await store.getPending(action.id))?.status, "claimed");
   });
 });

@@ -181,7 +181,7 @@ var LIMITS = {
 };
 var ISSUE_KEY = /^[A-Z][A-Z0-9_]+-\d+$/;
 var DEFAULT_FIELDS = ["summary", "status", "assignee", "description", "issuetype"];
-var HELD = "Held for approval. A Jira admin must approve before this change applies. Do not retry; check back later.";
+var HELD_PREFIX = "Held for approval (action ";
 var FAIL_CLOSED = "Denied: the call could not be checked. Retry later.";
 var JSON_HEADERS = {
   "Content-Type": ["application/json"],
@@ -609,6 +609,37 @@ function row(request, agent, outcome, reason, id, after = null, before = null) {
     requestId: requestLabel(id)
   };
 }
+function heldMessage(actionId) {
+  return `${HELD_PREFIX}${actionId}). A Jira admin must approve before this change applies. Do not retry; check back later.`;
+}
+function pendingArgs(call) {
+  switch (call.tool) {
+    case "jira_add_comment":
+      return { body: call.body };
+    case "jira_transition_issue":
+      return "transitionId" in call.target ? { transitionId: call.target.transitionId } : { toStatus: call.target.toStatus };
+    case "jira_assign_issue":
+      return { accountId: call.accountId };
+    case "jira_update_fields":
+      return { fields: call.fields };
+    default:
+      return {};
+  }
+}
+function diffWithBefore(call, diff, before) {
+  if (!before) {
+    return diff;
+  }
+  return diff.map((entry) => {
+    if (call.tool === "jira_transition_issue") {
+      return { ...entry, before: before.status ?? null };
+    }
+    if (entry.field in before) {
+      return { ...entry, before: before[entry.field] ?? null };
+    }
+    return entry;
+  });
+}
 function isWrite(tool) {
   return tool === "jira_add_comment" || tool === "jira_transition_issue" || tool === "jira_assign_issue" || tool === "jira_update_fields";
 }
@@ -692,11 +723,34 @@ async function handleCall(message, token, id, deps) {
     }
   }
   if (decision.kind === "needs_approval") {
-    const saved2 = await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "pending", null, id));
-    if (!saved2) {
+    const holder = await knownAgent(deps.store, token);
+    const call = parsed.call;
+    const issueKey = "issueKey" in call ? call.issueKey : "";
+    let before;
+    try {
+      before = await readBefore(deps.jira, call);
+    } catch {
+      await keepAudit(deps.store, row(request, holder, "denied", "jira", id));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(id, envelope("pending_approval", { diff: decision.diff }, HELD), false);
+    const diff = diffWithBefore(call, decision.diff, before);
+    const action = await deps.store.createPending({
+      agentId: holder,
+      tool: call.tool,
+      args: { ...pendingArgs(call), before },
+      issueKey,
+      diff
+    });
+    const saved2 = await keepAudit(deps.store, row(request, holder, "pending", null, id));
+    if (!saved2) {
+      await deps.store.finishPending(action.id, "expired", "system");
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
+    return toolResult(
+      id,
+      envelope("pending_approval", { actionId: action.id, diff }, heldMessage(action.id)),
+      false
+    );
   }
   const agent = await resolveToken(deps.store, token);
   const policy = agent ? await deps.store.getPolicy(agent.policy_id) : null;
@@ -1230,7 +1284,6 @@ function earlier(left, right) {
 // src/storage/kvs.ts
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
-var PENDING = "index:pending";
 function createKvsStore(kv) {
   return {
     async putAgent(agent) {
@@ -1282,15 +1335,71 @@ function createKvsStore(kv) {
     async createPending(input) {
       const action = pendingFrom(input);
       await kv.set(pendingKey(action.id), action);
-      await addId(kv, PENDING, action.id);
       return action;
     },
     async getPending(id) {
       return readRecord(kv, pendingKey(id));
     },
     async listPending(query) {
-      const actions = await readAll(kv, PENDING, pendingKey);
-      return actions.filter((action) => query?.status === void 0 || action.status === query.status);
+      const keys = await kv.list("pending:");
+      const actions = [];
+      for (const key of keys) {
+        const action = await readRecord(kv, key);
+        if (action && (query?.status === void 0 || action.status === query.status)) {
+          actions.push(action);
+        }
+      }
+      return actions;
+    },
+    async finishPending(id, status, decidedBy) {
+      if (status === "expired") {
+        const locked = await kv.create(claimKey(id), { id });
+        if (!locked) {
+          return null;
+        }
+      }
+      const found = await readRecord(kv, pendingKey(id));
+      if (!found) {
+        return null;
+      }
+      const claimed = found.status === "claimed" && (status === "approved" || status === "rejected" || status === "uncertain");
+      const expire = found.status === "pending" && status === "expired";
+      if (!claimed && !expire) {
+        return null;
+      }
+      const finished = {
+        ...found,
+        status,
+        decidedBy,
+        decidedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      try {
+        await kv.set(pendingKey(id), finished);
+      } catch (error) {
+        if (status === "expired") {
+          await kv.delete(claimKey(id));
+        }
+        throw error;
+      }
+      return finished;
+    },
+    async claimPending(id) {
+      const locked = await kv.create(claimKey(id), { id });
+      if (!locked) {
+        return null;
+      }
+      const found = await readRecord(kv, pendingKey(id));
+      if (!found || found.status !== "pending") {
+        return null;
+      }
+      const claimed = { ...found, status: "claimed" };
+      try {
+        await kv.set(pendingKey(id), claimed);
+      } catch (error) {
+        await kv.delete(claimKey(id));
+        throw error;
+      }
+      return claimed;
     }
   };
 }
@@ -1311,6 +1420,9 @@ function auditKey(id) {
 }
 function pendingKey(id) {
   return `pending:${id}`;
+}
+function claimKey(id) {
+  return `claim:${id}`;
 }
 function auditFrom(input) {
   return {
@@ -1382,6 +1494,20 @@ var store = createKvsStore({
   },
   async set(key, value) {
     await import_kvs.kvs.set(key, value);
+  },
+  async create(key, value) {
+    try {
+      await import_kvs.kvs.set(key, value, { keyPolicy: "FAIL_IF_EXISTS" });
+      return true;
+    } catch (error) {
+      if (error instanceof import_kvs.ForgeKvsAPIError && error.code === "KEY_CONFLICT") {
+        return false;
+      }
+      throw error;
+    }
+  },
+  async delete(key) {
+    await import_kvs.kvs.delete(key);
   },
   async list(prefix) {
     const keys = [];
