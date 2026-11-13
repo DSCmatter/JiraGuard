@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --experimental-strip-types --test src/storage/memory.test.ts src/storage/kvs.test.ts src/policy/decide.test.ts src/gate/handle.test.ts src/approval/queue.test.ts src/jira/cloud.test.ts src/product/proof.test.ts",
+    "test": "node --experimental-strip-types --test src/storage/memory.test.ts src/storage/kvs.test.ts src/policy/decide.test.ts src/guard/untrusted.test.ts src/gate/handle.test.ts src/approval/queue.test.ts src/jira/cloud.test.ts src/product/proof.test.ts",
     "bundle": "esbuild src/product/handler.ts --bundle --platform=node --target=node24 --format=cjs --outfile=product/src/index.js --external:@forge/api --external:@forge/kvs --alias:node:crypto=crypto"
   },
   "devDependencies": {
