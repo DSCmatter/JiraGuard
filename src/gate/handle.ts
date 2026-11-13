@@ -1,5 +1,6 @@
 import { registerAgent, resolveToken } from "../auth/token.ts";
 import type { AgentRecord, AuditOutcome, FieldDiff, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
+import { guardIssueList, type GuardReason, type IssueProse } from "../guard/untrusted.ts";
 import { nextCall, searchProjectJql } from "../policy/decide.ts";
 import type { DecisionRequest } from "../policy/decide.ts";
 import type { RecordStore } from "../storage/memory.ts";
@@ -123,10 +124,14 @@ type ToolSpec = {
   parse(args: unknown): ParseResult;
 };
 
+type GuardVerdict =
+  | { flagged: false; reasons: [] }
+  | { flagged: true; reasons: [GuardReason, ...GuardReason[]] };
+
 type Envelope = {
   status: "ok" | "denied" | "pending_approval" | "error";
   data: Json;
-  guard: { flagged: false; reasons: Json[] };
+  guard: GuardVerdict;
   message?: string;
 };
 
@@ -360,6 +365,7 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
       issueKey: null,
       outcome: "denied",
       reason: "request",
+      injectionFlagged: false,
       requestId: requestLabel(rpcId(message)),
     });
     return rpcError(200, rpcId(message), -32600, "Invalid Request");
@@ -387,6 +393,7 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
           issueKey: null,
           outcome: "allowed",
           reason: null,
+          injectionFlagged: false,
           requestId: requestLabel(id),
         });
         if (!saved) {
@@ -401,6 +408,7 @@ export async function handleMcp(request: WebtriggerRequest, deps: GateDeps): Pro
           issueKey: null,
           outcome: "denied",
           reason: "method",
+          injectionFlagged: false,
           requestId: requestLabel(id),
         });
         return rpcError(200, id, -32601, "Method not found");
@@ -556,6 +564,7 @@ async function keepAudit(
     issueKey: string | null;
     outcome: AuditOutcome;
     reason: string | null;
+    injectionFlagged: boolean;
     before?: Record<string, Json> | null;
     after?: Record<string, Json> | null;
     requestId: string;
@@ -571,7 +580,7 @@ async function keepAudit(
       reason: draft.reason,
       before: draft.before ?? null,
       after: draft.after ?? null,
-      injectionFlagged: false,
+      injectionFlagged: draft.injectionFlagged,
       requestId: draft.requestId,
     });
     return true;
@@ -596,6 +605,7 @@ function row(
   outcome: AuditOutcome,
   reason: string | null,
   id: RpcId,
+  injectionFlagged: boolean,
   after: Record<string, Json> | null = null,
   before: Record<string, Json> | null = null,
 ) {
@@ -607,6 +617,7 @@ function row(
     reason,
     before,
     after,
+    injectionFlagged,
     requestId: requestLabel(id),
   };
 }
@@ -717,19 +728,19 @@ async function handleCall(
   const decision = await nextCall(deps.store, token, request);
 
   if (decision.kind === "deny" && decision.reason === "auth") {
-    await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
+    await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id, false));
     return rpcError(401, id, -32001, decision.agentMessage);
   }
   if (decision.kind === "deny") {
-    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", decision.reason, id));
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", decision.reason, id, false));
     return toolResult(id, envelope("denied", {}, decision.agentMessage), true);
   }
   if (!parsed) {
-    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "tool", id));
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "tool", id, false));
     return rpcError(200, id, -32602, "Unknown tool");
   }
   if (!parsed.ok) {
-    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "schema", id));
+    await keepAudit(deps.store, row(request, await knownAgent(deps.store, token), "denied", "schema", id, false));
     return toolResult(id, envelope("error", {}, parsed.message), true);
   }
   if (parsed.call.tool === "jira_update_fields") {
@@ -740,7 +751,7 @@ async function handleCall(
     }
     const blocked = blockedField(parsed.call.fields, editorPolicy.fieldAllowList);
     if (blocked) {
-      await keepAudit(deps.store, row(request, editor.id, "denied", "field", id));
+      await keepAudit(deps.store, row(request, editor.id, "denied", "field", id, false));
       return toolResult(id, envelope("denied", {}, fieldDenial(blocked, editorPolicy.fieldAllowList)), true);
     }
   }
@@ -752,7 +763,7 @@ async function handleCall(
     try {
       before = await readBefore(deps.jira, call);
     } catch {
-      await keepAudit(deps.store, row(request, holder, "denied", "jira", id));
+      await keepAudit(deps.store, row(request, holder, "denied", "jira", id, false));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     const diff = diffWithBefore(call, decision.diff, before);
@@ -763,16 +774,19 @@ async function handleCall(
       issueKey,
       diff,
     });
-    const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id));
+    const projected = projectPending(call, issueKey, diff, before);
+    const body = envelope(
+      "pending_approval",
+      { actionId: action.id, diff: projected.diff },
+      heldMessage(action.id),
+      projected.reasons,
+    );
+    const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id, body.guard.flagged));
     if (!saved) {
       await deps.store.finishPending(action.id, "expired", "system");
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(
-      id,
-      envelope("pending_approval", { actionId: action.id, diff }, heldMessage(action.id)),
-      false,
-    );
+    return toolResult(id, body, false);
   }
 
   const agent = await resolveToken(deps.store, token);
@@ -780,11 +794,11 @@ async function handleCall(
   if (!agent || !policy) {
     const again = await nextCall(deps.store, token, request);
     if (again.kind === "deny" && again.reason === "auth") {
-      await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id));
+      await keepAudit(deps.store, row(request, "unknown", "auth_failed", "auth", id, false));
       return rpcError(401, id, -32001, again.agentMessage);
     }
     if (again.kind === "deny") {
-      await keepAudit(deps.store, row(request, "unknown", "denied", again.reason, id));
+      await keepAudit(deps.store, row(request, "unknown", "denied", again.reason, id, false));
       return toolResult(id, envelope("denied", {}, again.agentMessage), true);
     }
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
@@ -794,24 +808,31 @@ async function handleCall(
     try {
       before = await readBefore(deps.jira, parsed.call);
     } catch {
-      await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, writeAfter(parsed.call, agent.name)));
+      await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, false, writeAfter(parsed.call, agent.name)));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     try {
       const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
-      await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, writeAfter(parsed.call, agent.name), before));
+      await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, false, writeAfter(parsed.call, agent.name), before));
       return toolResult(id, result, false);
     } catch {
-      await keepAudit(deps.store, row(request, agent.id, "uncertain", "uncertain", id, writeAfter(parsed.call, agent.name), before));
+      await keepAudit(deps.store, row(request, agent.id, "uncertain", "uncertain", id, false, writeAfter(parsed.call, agent.name), before));
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
   }
-  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id));
+  let fetched: Envelope;
+  try {
+    fetched = await executeAllowed(parsed.call, agent, policy, deps.jira);
+  } catch {
+    await keepAudit(deps.store, row(request, agent.id, "denied", "jira", id, false));
+    return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+  }
+  const shown = withGuard(parsed.call, fetched);
+  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, shown.guard.flagged));
   if (!saved) {
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
-  const result = await executeAllowed(parsed.call, agent, policy, deps.jira);
-  return toolResult(id, result, false);
+  return toolResult(id, shown, false);
 }
 
 async function listResponse(store: RecordStore, agent: AgentRecord, token: string, id: RpcId): Promise<WebtriggerResponse> {
@@ -854,6 +875,7 @@ async function authError(store: RecordStore, token: string, id: RpcId, tool: str
     issueKey: null,
     outcome: "auth_failed",
     reason: "auth",
+    injectionFlagged: false,
     requestId: requestLabel(id),
   });
   return rpcError(401, id, -32001, message);
@@ -1053,12 +1075,116 @@ function asJson(value: unknown): Json | undefined {
   return record;
 }
 
-function envelope(status: Envelope["status"], data: Json, message?: string): Envelope {
-  const result: Envelope = { status, data, guard: { flagged: false, reasons: [] } };
-  if (message !== undefined) {
-    result.message = message;
+function verdict(reasons: readonly GuardReason[]): GuardVerdict {
+  if (reasons.length === 0) {
+    return { flagged: false, reasons: [] };
   }
-  return result;
+  const [first, ...rest] = reasons;
+  if (first === undefined) {
+    return { flagged: false, reasons: [] };
+  }
+  return { flagged: true, reasons: [first, ...rest] };
+}
+
+function envelope(
+  status: Envelope["status"],
+  data: Json,
+  message?: string,
+  reasons: readonly GuardReason[] = [],
+): Envelope {
+  const guard = verdict(reasons);
+  if (message !== undefined) {
+    return { status, data, guard, message };
+  }
+  return { status, data, guard };
+}
+
+function withGuard(call: ToolCall, result: Envelope): Envelope {
+  switch (call.tool) {
+    case "jira_get_issue": {
+      if (!isIssueProse(result.data)) {
+        return result;
+      }
+      const guarded = guardIssueList([result.data]);
+      const issue = guarded.issues[0];
+      if (!issue) {
+        return result;
+      }
+      return envelope("ok", issue, undefined, guarded.reasons);
+    }
+    case "jira_search_issues": {
+      if (!isSearchPage(result.data)) {
+        return result;
+      }
+      const guarded = guardIssueList(result.data.issues);
+      return envelope(
+        "ok",
+        { issues: guarded.issues, total: result.data.total, nextStartAt: result.data.nextStartAt },
+        undefined,
+        guarded.reasons,
+      );
+    }
+    case "guard_whoami":
+    case "jira_list_transitions":
+    case "jira_add_comment":
+    case "jira_transition_issue":
+    case "jira_assign_issue":
+    case "jira_update_fields":
+      return result;
+    default: {
+      const unreachable: never = call;
+      return unreachable;
+    }
+  }
+}
+
+function projectPending(
+  call: ToolCall,
+  issueKey: string,
+  diff: FieldDiff[],
+  before: Record<string, Json> | null,
+): { diff: FieldDiff[]; reasons: readonly GuardReason[] } {
+  switch (call.tool) {
+    case "jira_update_fields": {
+      if (!before) {
+        return { diff, reasons: [] };
+      }
+      const guarded = guardIssueList([{ key: issueKey, fields: before }]);
+      const fields = guarded.issues[0]?.fields;
+      if (!fields) {
+        return { diff, reasons: [] };
+      }
+      return {
+        reasons: guarded.reasons,
+        diff: diff.map((entry) =>
+          Object.hasOwn(fields, entry.field) ? { ...entry, before: fields[entry.field] ?? entry.before } : entry,
+        ),
+      };
+    }
+    case "guard_whoami":
+    case "jira_search_issues":
+    case "jira_get_issue":
+    case "jira_list_transitions":
+    case "jira_add_comment":
+    case "jira_transition_issue":
+    case "jira_assign_issue":
+      return { diff, reasons: [] };
+    default: {
+      const unreachable: never = call;
+      return unreachable;
+    }
+  }
+}
+
+function isIssueProse(value: unknown): value is IssueProse {
+  return isRecord(value) && typeof value.key === "string" && jsonObject(value.fields) !== undefined;
+}
+
+function isSearchPage(value: Json): value is { issues: IssueProse[]; total: Json; nextStartAt: Json } {
+  if (!isRecord(value) || !Array.isArray(value.issues) || !value.issues.every((item) => isIssueProse(item))) {
+    return false;
+  }
+  return Object.hasOwn(value, "total") && Object.hasOwn(value, "nextStartAt");
 }
 
 function toolResult(id: RpcId, body: Envelope, isError: boolean): WebtriggerResponse {
