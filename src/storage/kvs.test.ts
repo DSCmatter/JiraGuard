@@ -160,4 +160,34 @@ describe("kvs store", () => {
     assert.equal(agent?.status, "revoked");
     assert.equal(agent?.policy_id, "pol_new");
   });
+
+  it("lists both agents when two creates overlap", async () => {
+    const store = createKvsStore(memoryKv());
+    await Promise.all([
+      store.putAgent({
+        id: "agt_a",
+        name: "a",
+        description: "",
+        token_hash: "aa".repeat(32),
+        status: "active",
+        created_by: "admin",
+        created_at: "2026-11-14T00:00:00.000Z",
+        last_used_at: null,
+        policy_id: "pol_a",
+      }),
+      store.putAgent({
+        id: "agt_b",
+        name: "b",
+        description: "",
+        token_hash: "bb".repeat(32),
+        status: "active",
+        created_by: "admin",
+        created_at: "2026-11-14T00:00:00.000Z",
+        last_used_at: null,
+        policy_id: "pol_b",
+      }),
+    ]);
+    const ids = (await store.listAgents()).map((agent) => agent.id).sort();
+    assert.deepEqual(ids, ["agt_a", "agt_b"]);
+  });
 });

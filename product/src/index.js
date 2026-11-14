@@ -2240,19 +2240,15 @@ function createKvsStore(kv) {
       await writeAgent(kv, agent);
     },
     async patchAgent(id, patch) {
-      for (let attempt = 0; attempt < 8; attempt += 1) {
+      return withLock(kv, `lock:agent:${id}`, async () => {
         const found = await readRecord(kv, agentKey(id));
         if (!found) {
           return null;
         }
         const next = { ...found, ...patch };
         await writeAgent(kv, next);
-        const after = await readRecord(kv, agentKey(id));
-        if (after && after.status === next.status && after.policy_id === next.policy_id) {
-          return after;
-        }
-      }
-      return null;
+        return next;
+      });
     },
     async getAgent(id) {
       return readRecord(kv, agentKey(id));
@@ -2423,18 +2419,25 @@ async function writeAgent(kv, agent) {
   await addId(kv, AGENTS, agent.id);
 }
 async function addId(kv, index, id) {
-  for (let attempt = 0; attempt < 8; attempt += 1) {
+  await withLock(kv, `lock:${index}`, async () => {
     const ids = await readIds(kv, index);
-    if (ids.includes(id)) {
-      return;
+    if (!ids.includes(id)) {
+      await kv.set(index, [...ids, id]);
     }
-    await kv.set(index, [...ids, id]);
-    const after = await readIds(kv, index);
-    if (after.includes(id)) {
-      return;
+  });
+}
+async function withLock(kv, lock, body) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (await kv.create(lock, { lock })) {
+      try {
+        return await body();
+      } finally {
+        await kv.delete(lock);
+      }
     }
+    await new Promise((resolve) => setTimeout(resolve, 0));
   }
-  throw new Error("index update lost");
+  throw new Error("update lost");
 }
 async function readIds(kv, index) {
   const value = await kv.get(index);
