@@ -56,6 +56,7 @@ function auditHint(empty) {
 function App() {
   const pending = useRef(false);
   const [locked, setLocked] = useState(false);
+  const [desk, setDesk] = useState(null);
   const [token, setToken] = useState(null);
   const [notice, setNotice] = useState(null);
   const [name, setName] = useState("");
