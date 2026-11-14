@@ -17,6 +17,7 @@ export type AuditQuery = {
   issueKey?: string;
   from?: string;
   to?: string;
+  injectionFlagged?: true;
 };
 
 export function auditMatches(event: AuditEvent, query: AuditQuery | undefined): boolean {
@@ -33,6 +34,9 @@ export function auditMatches(event: AuditEvent, query: AuditQuery | undefined): 
     return false;
   }
   if (query?.to !== undefined && earlier(query.to, event.ts)) {
+    return false;
+  }
+  if (query?.injectionFlagged === true && event.injectionFlagged !== true) {
     return false;
   }
   return true;

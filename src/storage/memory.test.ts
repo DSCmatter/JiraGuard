@@ -116,4 +116,35 @@ describe("agent records", () => {
     const listed = await store.listAudits({ from: "2026-11-12T13:00:00.000+02:00" });
     assert.deepEqual(listed, [event]);
   });
+
+  it("returns flagged events when the query asks for injection", async () => {
+    const store = createMemoryStore();
+    const flagged = await store.appendAudit({
+      agentId: "agt_1",
+      tool: "jira_get_issue",
+      issueKey: "PROJ-1",
+      project: "PROJ",
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: true,
+      requestId: "req_flag",
+    });
+    await store.appendAudit({
+      agentId: "agt_1",
+      tool: "jira_get_issue",
+      issueKey: "PROJ-2",
+      project: "PROJ",
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: false,
+      requestId: "req_plain",
+    });
+
+    assert.deepEqual(await store.listAudits({ injectionFlagged: true }), [flagged]);
+    assert.equal((await store.listAudits()).length, 2);
+  });
 });
