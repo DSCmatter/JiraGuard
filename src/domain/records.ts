@@ -2,19 +2,28 @@
 
 export type AgentStatus = "active" | "revoked";
 
-export type WriteMode = "deny" | "approve" | "allow";
+export const WRITE_MODES = ["deny", "approve", "allow"] as const;
+export type WriteMode = (typeof WRITE_MODES)[number];
 
 export type InjectionMode = "annotate" | "redact" | "block";
 
-export type AuditOutcome =
-  | "allowed"
-  | "denied"
-  | "pending"
-  | "approved"
-  | "rejected"
-  | "auth_failed"
-  | "reverted"
-  | "uncertain";
+export const AUDIT_OUTCOMES = [
+  "allowed",
+  "denied",
+  "pending",
+  "approved",
+  "rejected",
+  "auth_failed",
+  "reverted",
+  "uncertain",
+] as const;
+export type AuditOutcome = (typeof AUDIT_OUTCOMES)[number];
+
+const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
+
+export function isProjectKey(value: string): boolean {
+  return PROJECT_KEY.test(value);
+}
 
 export type PendingStatus = "pending" | "claimed" | "approved" | "rejected" | "expired" | "uncertain";
 
@@ -22,6 +31,20 @@ export type RateLimit = {
   reads: number;
   writes: number;
   windowSeconds: number;
+};
+
+export type HiddenLimits = {
+  fieldAllowList: string[];
+  rateLimit: RateLimit;
+  maxResults: number;
+  injectionMode: InjectionMode;
+};
+
+export const DEFAULT_POLICY_LIMITS: HiddenLimits = {
+  fieldAllowList: [],
+  rateLimit: { reads: 120, writes: 20, windowSeconds: 3600 },
+  maxResults: 25,
+  injectionMode: "annotate",
 };
 
 export type AgentRecord = {
