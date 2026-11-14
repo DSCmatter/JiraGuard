@@ -29,7 +29,7 @@ const store = createKvsStore({
     await kvs.delete(key);
   },
   async list(prefix) {
-    const keys: string[] = [];
+    const rows: Array<{ key: string; value: unknown }> = [];
     let cursor: string | undefined;
     do {
       let query = kvs.query().where("key", WhereConditions.beginsWith(prefix)).limit(100);
@@ -38,11 +38,11 @@ const store = createKvsStore({
       }
       const page = await query.getMany();
       for (const result of page.results) {
-        keys.push(result.key);
+        rows.push({ key: result.key, value: result.value });
       }
       cursor = page.nextCursor;
     } while (cursor);
-    return keys;
+    return rows;
   },
 });
 

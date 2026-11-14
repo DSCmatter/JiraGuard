@@ -15,7 +15,7 @@ export type KeyValue = {
   set(key: string, value: unknown): Promise<void>;
   create(key: string, value: unknown): Promise<boolean>;
   delete(key: string): Promise<void>;
-  list(prefix: string): Promise<string[]>;
+  list(prefix: string): Promise<Array<{ key: string; value: unknown }>>;
 };
 
 const AGENTS = "index:agents";
@@ -24,9 +24,22 @@ const POLICIES = "index:policies";
 export function createKvsStore(kv: KeyValue): RecordStore {
   return {
     async putAgent(agent) {
-      await kv.set(agentKey(agent.id), agent);
-      await kv.set(hashKey(agent.token_hash), agent.id);
-      await addId(kv, AGENTS, agent.id);
+      await writeAgent(kv, agent);
+    },
+    async patchAgent(id, patch) {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const found = await readRecord<AgentRecord>(kv, agentKey(id));
+        if (!found) {
+          return null;
+        }
+        const next = { ...found, ...patch };
+        await writeAgent(kv, next);
+        const after = await readRecord<AgentRecord>(kv, agentKey(id));
+        if (after && after.status === next.status && after.policy_id === next.policy_id) {
+          return after;
+        }
+      }
+      return null;
     },
     async getAgent(id) {
       return readRecord<AgentRecord>(kv, agentKey(id));
@@ -59,10 +72,10 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       return event;
     },
     async listAudits(query) {
-      const keys = await kv.list("audit:");
+      const rows = await kv.list("audit:");
       const records: AuditEvent[] = [];
-      for (const key of keys) {
-        const event = await readRecord<AuditEvent>(kv, key);
+      for (const row of rows) {
+        const event = row.value as AuditEvent | null | undefined;
         if (event && matchesAudit(event, query)) {
           records.push(event);
         }
@@ -78,10 +91,10 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       return readRecord<PendingAction>(kv, pendingKey(id));
     },
     async listPending(query) {
-      const keys = await kv.list("pending:");
+      const rows = await kv.list("pending:");
       const actions: PendingAction[] = [];
-      for (const key of keys) {
-        const action = await readRecord<PendingAction>(kv, key);
+      for (const row of rows) {
+        const action = row.value as PendingAction | null | undefined;
         if (action && (query?.status === undefined || action.status === query.status)) {
           actions.push(action);
         }
@@ -202,12 +215,25 @@ function pendingFrom(input: NewPending): PendingAction {
   };
 }
 
+async function writeAgent(kv: KeyValue, agent: AgentRecord): Promise<void> {
+  await kv.set(agentKey(agent.id), agent);
+  await kv.set(hashKey(agent.token_hash), agent.id);
+  await addId(kv, AGENTS, agent.id);
+}
+
 async function addId(kv: KeyValue, index: string, id: string): Promise<void> {
-  const ids = await readIds(kv, index);
-  if (ids.includes(id)) {
-    return;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const ids = await readIds(kv, index);
+    if (ids.includes(id)) {
+      return;
+    }
+    await kv.set(index, [...ids, id]);
+    const after = await readIds(kv, index);
+    if (after.includes(id)) {
+      return;
+    }
   }
-  await kv.set(index, [...ids, id]);
+  throw new Error("index update lost");
 }
 
 async function readIds(kv: KeyValue, index: string): Promise<string[]> {

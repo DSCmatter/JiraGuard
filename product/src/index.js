@@ -64,9 +64,7 @@ async function revokeAgent(store2, id) {
   if (!agent) {
     return null;
   }
-  const revoked = { ...agent, status: "revoked" };
-  await store2.putAgent(revoked);
-  return revoked;
+  return store2.patchAgent(id, { status: "revoked" });
 }
 
 // src/guard/untrusted.ts
@@ -1568,6 +1566,37 @@ function audit(action, outcome, reason, before, after) {
   };
 }
 
+// src/storage/memory.ts
+function auditMatches(event, query) {
+  if (query?.agentId !== void 0 && event.agentId !== query.agentId) {
+    return false;
+  }
+  if (query?.outcome !== void 0 && event.outcome !== query.outcome) {
+    return false;
+  }
+  if (query?.issueKey !== void 0 && event.issueKey !== query.issueKey) {
+    return false;
+  }
+  if (query?.from !== void 0 && earlier(event.ts, query.from)) {
+    return false;
+  }
+  if (query?.to !== void 0 && earlier(query.to, event.ts)) {
+    return false;
+  }
+  if (query?.injectionFlagged === true && event.injectionFlagged !== true) {
+    return false;
+  }
+  return true;
+}
+function earlier(left, right) {
+  const start = Date.parse(left);
+  const end = Date.parse(right);
+  if (Number.isNaN(start) || Number.isNaN(end)) {
+    return true;
+  }
+  return start < end;
+}
+
 // src/admin/desk.ts
 function parseAccountId(value) {
   if (typeof value !== "string") {
@@ -1716,13 +1745,7 @@ async function applyVerdict(deps, actor, command) {
   }
 }
 async function attachPolicy(store2, agentId, policyId) {
-  const agent = await store2.getAgent(agentId);
-  if (!agent) {
-    return null;
-  }
-  const next = { ...agent, policy_id: policyId };
-  await store2.putAgent(next);
-  return next;
+  return store2.patchAgent(agentId, { policy_id: policyId });
 }
 function parseCommand(payload) {
   if (containsForbidden(payload)) {
@@ -1930,12 +1953,12 @@ async function buildDesk(deps, filter) {
   const agents = await deps.store.listAgents();
   const policies = await deps.store.listPolicies();
   const approvals = await listApprovalQueue(deps.store);
-  const unfiltered = await deps.store.listAudits();
-  const events = filterIsSet(filter) ? await deps.store.listAudits(toQuery(filter)) : unfiltered;
+  const history = await deps.store.listAudits();
+  const events = history.filter((event) => auditMatches(event, toQuery(filter)));
   const policyById = new Map(policies.map((policy) => [policy.id, policy]));
   const nameById = new Map(agents.map((agent) => [agent.id, agent.name]));
   const lastUsed = /* @__PURE__ */ new Map();
-  for (const event of unfiltered) {
+  for (const event of history) {
     lastUsed.set(event.agentId, later(lastUsed.get(event.agentId), event.ts));
   }
   const cards = [...agents].sort((left, right) => left.created_at < right.created_at ? 1 : left.created_at > right.created_at ? -1 : 0).map((agent) => toCard(agent, policyById.get(agent.policy_id) ?? null, lastUsed.get(agent.id) ?? null));
@@ -2209,47 +2232,27 @@ async function ensureProofAgent(store2, spec) {
 
 // src/storage/kvs.ts
 var import_node_crypto2 = require("crypto");
-
-// src/storage/memory.ts
-function auditMatches(event, query) {
-  if (query?.agentId !== void 0 && event.agentId !== query.agentId) {
-    return false;
-  }
-  if (query?.outcome !== void 0 && event.outcome !== query.outcome) {
-    return false;
-  }
-  if (query?.issueKey !== void 0 && event.issueKey !== query.issueKey) {
-    return false;
-  }
-  if (query?.from !== void 0 && earlier(event.ts, query.from)) {
-    return false;
-  }
-  if (query?.to !== void 0 && earlier(query.to, event.ts)) {
-    return false;
-  }
-  if (query?.injectionFlagged === true && event.injectionFlagged !== true) {
-    return false;
-  }
-  return true;
-}
-function earlier(left, right) {
-  const start = Date.parse(left);
-  const end = Date.parse(right);
-  if (Number.isNaN(start) || Number.isNaN(end)) {
-    return true;
-  }
-  return start < end;
-}
-
-// src/storage/kvs.ts
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
 function createKvsStore(kv) {
   return {
     async putAgent(agent) {
-      await kv.set(agentKey(agent.id), agent);
-      await kv.set(hashKey(agent.token_hash), agent.id);
-      await addId(kv, AGENTS, agent.id);
+      await writeAgent(kv, agent);
+    },
+    async patchAgent(id, patch) {
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const found = await readRecord(kv, agentKey(id));
+        if (!found) {
+          return null;
+        }
+        const next = { ...found, ...patch };
+        await writeAgent(kv, next);
+        const after = await readRecord(kv, agentKey(id));
+        if (after && after.status === next.status && after.policy_id === next.policy_id) {
+          return after;
+        }
+      }
+      return null;
     },
     async getAgent(id) {
       return readRecord(kv, agentKey(id));
@@ -2282,10 +2285,10 @@ function createKvsStore(kv) {
       return event;
     },
     async listAudits(query) {
-      const keys = await kv.list("audit:");
+      const rows = await kv.list("audit:");
       const records = [];
-      for (const key of keys) {
-        const event = await readRecord(kv, key);
+      for (const row2 of rows) {
+        const event = row2.value;
         if (event && matchesAudit(event, query)) {
           records.push(event);
         }
@@ -2301,10 +2304,10 @@ function createKvsStore(kv) {
       return readRecord(kv, pendingKey(id));
     },
     async listPending(query) {
-      const keys = await kv.list("pending:");
+      const rows = await kv.list("pending:");
       const actions = [];
-      for (const key of keys) {
-        const action = await readRecord(kv, key);
+      for (const row2 of rows) {
+        const action = row2.value;
         if (action && (query?.status === void 0 || action.status === query.status)) {
           actions.push(action);
         }
@@ -2414,12 +2417,24 @@ function pendingFrom(input) {
     decidedAt: null
   };
 }
+async function writeAgent(kv, agent) {
+  await kv.set(agentKey(agent.id), agent);
+  await kv.set(hashKey(agent.token_hash), agent.id);
+  await addId(kv, AGENTS, agent.id);
+}
 async function addId(kv, index, id) {
-  const ids = await readIds(kv, index);
-  if (ids.includes(id)) {
-    return;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const ids = await readIds(kv, index);
+    if (ids.includes(id)) {
+      return;
+    }
+    await kv.set(index, [...ids, id]);
+    const after = await readIds(kv, index);
+    if (after.includes(id)) {
+      return;
+    }
   }
-  await kv.set(index, [...ids, id]);
+  throw new Error("index update lost");
 }
 async function readIds(kv, index) {
   const value = await kv.get(index);
@@ -2470,7 +2485,7 @@ var store = createKvsStore({
     await import_kvs.kvs.delete(key);
   },
   async list(prefix) {
-    const keys = [];
+    const rows = [];
     let cursor;
     do {
       let query = import_kvs.kvs.query().where("key", import_kvs.WhereConditions.beginsWith(prefix)).limit(100);
@@ -2479,11 +2494,11 @@ var store = createKvsStore({
       }
       const page = await query.getMany();
       for (const result of page.results) {
-        keys.push(result.key);
+        rows.push({ key: result.key, value: result.value });
       }
       cursor = page.nextCursor;
     } while (cursor);
-    return keys;
+    return rows;
   }
 });
 async function mcpHandler(request) {

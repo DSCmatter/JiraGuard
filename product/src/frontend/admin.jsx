@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@forge/bridge";
 import ForgeReconciler, {
   Button,
@@ -54,7 +54,8 @@ function auditHint(empty) {
 }
 
 function App() {
-  const [desk, setDesk] = useState(null);
+  const pending = useRef(false);
+  const [locked, setLocked] = useState(false);
   const [token, setToken] = useState(null);
   const [notice, setNotice] = useState(null);
   const [name, setName] = useState("");
@@ -96,11 +97,19 @@ function App() {
 
   const run = useCallback(
     async (command) => {
+      if (pending.current) {
+        return;
+      }
+      pending.current = true;
+      setLocked(true);
       try {
         const result = await invoke("run", command);
         accept(result);
       } catch {
         setNotice("The page could not reach JiraGuard.");
+      } finally {
+        pending.current = false;
+        setLocked(false);
       }
     },
     [accept],
@@ -230,7 +239,7 @@ function App() {
                   }
                 }}
               />
-              <Button appearance="primary" onClick={createAgent}>
+              <Button appearance="primary" isDisabled={locked} onClick={createAgent}>
                 Create agent
               </Button>
               {desk.agents.map((agent) => (
@@ -241,6 +250,7 @@ function App() {
                   writeModes={desk.writeModes}
                   onRevoke={() => void run({ type: "revoke", agentId: agent.id })}
                   onSave={(command) => void run(command)}
+                  locked={locked}
                 />
               ))}
             </Stack>
@@ -262,12 +272,14 @@ function App() {
                     <Inline space="space.100">
                       <Button
                         appearance="primary"
+                        isDisabled={locked}
                         onClick={() => void run({ type: "decide", actionId: row.id, verdict: "approve" })}
                       >
                         Approve
                       </Button>
                       <Button
                         appearance="danger"
+                        isDisabled={locked}
                         onClick={() => void run({ type: "decide", actionId: row.id, verdict: "reject" })}
                       >
                         Reject
@@ -386,7 +398,7 @@ function App() {
   );
 }
 
-function AgentRow({ agent, toolChoices, writeModes, onRevoke, onSave }) {
+function AgentRow({ agent, toolChoices, writeModes, onRevoke, onSave, locked }) {
   const policyKey =
     agent.policy.kind === "set"
       ? `${agent.policy.allowedProjects.join(",")}|${agent.policy.allowedTools.join(",")}|${agent.policy.writeMode}`
@@ -406,15 +418,16 @@ function AgentRow({ agent, toolChoices, writeModes, onRevoke, onSave }) {
         toolChoices={toolChoices}
         writeModes={writeModes}
         onSave={onSave}
+        locked={locked}
       />
-      <Button appearance="danger" onClick={onRevoke}>
+      <Button appearance="danger" isDisabled={locked} onClick={onRevoke}>
         Revoke
       </Button>
     </Stack>
   );
 }
 
-function PolicyDraft({ agent, toolChoices, writeModes, onSave }) {
+function PolicyDraft({ agent, toolChoices, writeModes, onSave, locked }) {
   const policy = agent.policy.kind === "set" ? agent.policy : null;
   const [projects, setProjects] = useState(policy ? policy.allowedProjects.join(", ") : "");
   const [tools, setTools] = useState(policy ? policy.allowedTools : []);
@@ -456,6 +469,7 @@ function PolicyDraft({ agent, toolChoices, writeModes, onSave }) {
       />
       <Button
         appearance="primary"
+        isDisabled={locked}
         onClick={() =>
           onSave({
             type: "savePolicy",

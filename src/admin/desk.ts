@@ -13,7 +13,7 @@ import {
   type WriteMode,
 } from "../domain/records.ts";
 import { catalogToolNames, type JiraWork } from "../gate/handle.ts";
-import type { AuditQuery, RecordStore } from "../storage/memory.ts";
+import { auditMatches, type AuditQuery, type RecordStore } from "../storage/memory.ts";
 
 export type AccountId = string & { readonly __brand: "AccountId" };
 
@@ -289,13 +289,7 @@ async function applyVerdict(
 }
 
 async function attachPolicy(store: RecordStore, agentId: string, policyId: string): Promise<AgentRecord | null> {
-  const agent = await store.getAgent(agentId);
-  if (!agent) {
-    return null;
-  }
-  const next: AgentRecord = { ...agent, policy_id: policyId };
-  await store.putAgent(next);
-  return next;
+  return store.patchAgent(agentId, { policy_id: policyId });
 }
 
 function parseCommand(payload: unknown): Parsed {
@@ -524,12 +518,12 @@ async function buildDesk(deps: AdminDeps, filter: AuditFilter): Promise<DeskSnap
   const agents = await deps.store.listAgents();
   const policies = await deps.store.listPolicies();
   const approvals = await listApprovalQueue(deps.store);
-  const unfiltered = await deps.store.listAudits();
-  const events = filterIsSet(filter) ? await deps.store.listAudits(toQuery(filter)) : unfiltered;
+  const history = await deps.store.listAudits();
+  const events = history.filter((event) => auditMatches(event, toQuery(filter)));
   const policyById = new Map(policies.map((policy) => [policy.id, policy]));
   const nameById = new Map(agents.map((agent) => [agent.id, agent.name]));
   const lastUsed = new Map<string, string>();
-  for (const event of unfiltered) {
+  for (const event of history) {
     lastUsed.set(event.agentId, later(lastUsed.get(event.agentId), event.ts));
   }
   const cards = [...agents]

@@ -57,6 +57,10 @@ export type PendingQuery = {
 
 export type RecordStore = {
   putAgent(agent: AgentRecord): Promise<void>;
+  patchAgent(
+    id: string,
+    patch: { status?: AgentRecord["status"]; policy_id?: string },
+  ): Promise<AgentRecord | null>;
   getAgent(id: string): Promise<AgentRecord | null>;
   listAgents(): Promise<AgentRecord[]>;
   getAgentByHash(tokenHash: string): Promise<AgentRecord | null>;
@@ -89,6 +93,15 @@ export function createMemoryStore(): RecordStore {
   return {
     async putAgent(agent) {
       agents.set(agent.id, copy(agent));
+    },
+    async patchAgent(id, patch) {
+      const found = agents.get(id);
+      if (!found) {
+        return null;
+      }
+      const next = { ...found, ...patch };
+      agents.set(id, next);
+      return copy(next);
     },
     async getAgent(agentId) {
       const found = agents.get(agentId);

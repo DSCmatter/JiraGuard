@@ -215,10 +215,8 @@ describe("admin desk", () => {
     if (filtered.type !== "desk") {
       return;
     }
-    assert.equal(
-      queries.some((query) => query?.injectionFlagged === true && query.agentId === agentId),
-      true,
-    );
+    assert.equal(queries.length, 1);
+    assert.equal(queries[0], undefined);
     assert.deepEqual(
       filtered.desk.audit.events.map((event) => event.id),
       [flagged.id],
@@ -254,7 +252,7 @@ describe("admin desk", () => {
 
   it("expands a calendar day across that UTC day", async () => {
     const memory = createMemoryStore();
-    const { store, queries } = watchAudits(memory);
+    const { store } = watchAudits(memory);
     const event = await memory.appendAudit({
       ts: "2026-11-14T12:00:00.000Z",
       agentId: "agt_day",
@@ -268,7 +266,19 @@ describe("admin desk", () => {
       injectionFlagged: false,
       requestId: "req_day",
     });
-    queries.length = 0;
+    await memory.appendAudit({
+      ts: "2026-11-15T12:00:00.000Z",
+      agentId: "agt_day",
+      tool: "guard_whoami",
+      issueKey: null,
+      project: null,
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: false,
+      requestId: "req_next",
+    });
     const filtered = await handleAdmin(depsFor(store), {
       type: "filterAudit",
       filter: { from: "2026-11-14", to: "2026-11-14" },
@@ -281,10 +291,6 @@ describe("admin desk", () => {
       filtered.desk.audit.events.map((row) => row.id),
       [event.id],
     );
-    assert.deepEqual(queries.at(-1), {
-      from: "2026-11-14T00:00:00.000Z",
-      to: "2026-11-14T23:59:59.999Z",
-    });
   });
 
   it("rejects a bad date before any audit query", async () => {
