@@ -1,108 +1,77 @@
 # JiraGuard
 
-**A governed MCP server for Jira.** Give each AI agent its own identity, permissions, approval rules and audit trail, all running inside Atlassian Forge.
+JiraGuard is a Forge app that lets a Jira admin connect an AI agent to Jira without handing it one broad credential. Each agent gets its own token and a policy. Risky writes wait for a person. Issue text is marked as untrusted and scanned for instruction-like content. Every call is written to an audit log.
 
-> Working title. Built for Codegeist 2026. Commands and UI labels below are the target design. Finalize them as the app is built.
+Built for Codegeist 2026. Licensed under [MIT](LICENSE).
 
-Phases 0, 1, and 2 are in this repo. `npm test` runs the storage and policy tests. The quick start below is the target admin flow. The product app and admin page are not installed.
+## What an admin can do
 
-## Why
+- Create an agent and copy its token once.
+- Limit that agent to projects, tools, and a write mode: `deny`, `approve`, or `allow`.
+- Hold a risky write, read the diff, and approve or reject it.
+- Read an audit row for each call, including before and after values.
+- See which injection matchers fired, written as `injection: tool_request, reassign`.
+- Revoke an agent. The next call from that token fails.
 
-Agents connected to Jira usually share one broad credential. JiraGuard lets you say: *this agent may read project PROJ, comment, and propose changes, but a human approves anything risky, and everything is logged.*
+The desk is under **Apps → JiraGuard**. A Jira admin can also open it from the gear menu, then **Apps**. Creating an agent, editing a policy, revoking an agent, and approving a write require the Jira Administer permission.
 
-## Features
+## Connect a client
 
-- Per-agent tokens with instant revocation
-- Policy per agent: projects, tools, fields, write mode (`deny` / `approve` / `allow`), rate limits
-- Approval queue with change diffs
-- Audit log of every read and write, with before/after values
-- Untrusted-content marking and prompt-injection scanning on issue text
-- One-click revert of logged changes (P1)
-
-## Quick Start (target: under 10 minutes)
-
-**Prerequisites:** a Jira Cloud site, admin access, and the install link from the submission.
-
-1. **Install** the app using the install link and approve the requested scopes (`read:jira-work`, `write:jira-work`, storage).
-2. **Open** Jira → Apps → **JiraGuard** → **Agents** → **Create agent**.
-3. **Set policy:** choose allowed projects, tools, and write mode. Start with `approve`.
-4. **Copy the token.** It is shown once.
-5. **Connect your MCP client** to the endpoint URL shown on the Agents page, using the token as a bearer token.
-
-Example client configuration (shape varies by client):
+1. Install the app on a Jira Cloud site and approve `read:jira-work`, `write:jira-work`, and app storage.
+2. Open **JiraGuard**, then **Agents**, then **Create agent**. Start with write mode `approve`.
+3. Copy the token. It is shown once.
+4. Copy the endpoint URL on the Agents page.
+5. Point an MCP client at that URL with the token as a bearer token.
 
 ```json
 {
   "mcpServers": {
     "jira-guarded": {
-      "url": "https://<your-endpoint-from-the-admin-page>",
+      "url": "https://<endpoint-from-the-agents-page>",
       "headers": { "Authorization": "Bearer <AGENT_TOKEN>" }
     }
   }
 }
 ```
 
-6. **Verify:** ask the agent to call `guard_whoami`, then search an allowed project.
+6. Call `guard_whoami`, then `jira_search_issues` on an allowed project.
 
-## Day-to-Day Admin
+The other tools are `jira_get_issue`, `jira_list_transitions`, `jira_add_comment`, `jira_transition_issue`, `jira_assign_issue`, and `jira_update_fields`.
+
+## Day to day
 
 | Task | Where |
-|---|---|
-| Review held writes | Approvals tab → inspect diff → Approve / Reject |
-| See what an agent did | Audit tab → filter by agent, outcome, date |
-| Stop an agent | Agents tab → Revoke |
-| Investigate an attack attempt | Audit tab → filter "injection flagged" |
+| --- | --- |
+| Review a held write | Approvals tab. Read the diff, then Approve or Reject. |
+| See what an agent did | Audit tab. Filter by agent, outcome, or date. |
+| Stop an agent | Agents tab, then Revoke. The next request fails. |
+| Look for an injection attempt | Audit tab. Turn on Injection flagged. Read the Reason cell. |
 
-## Runbook: Agent Misbehaving
+## Not in this version
 
-**When to use:** an agent is making unexpected changes or reading too much.
-1. **Revoke** the agent (Agents tab). Takes effect on its next request.
-2. **Review** its recent events in the Audit tab.
-3. **Revert** unwanted field changes (P1) or fix manually. Reverts fail if a human edited the field afterwards.
-4. **Tighten policy** (switch to `approve`, reduce projects/tools), then issue a new token.
-5. **Escalate** to your security contact if injection-flagged content is involved.
+- One-click revert of a logged change.
+- Enforced rate limits.
+- `jira_create_issue`.
+- Injection modes other than annotate. Flagged text is wrapped and recorded. It is not redacted or blocked.
 
-## Runbook: Removing the App
+Injection detection is a set of matchers, not a guarantee. Jira records the write as the app, so use the JiraGuard audit log to see which agent acted.
 
-1. Revoke all agents and remove their tokens from client configs.
-2. Export the audit log if you need it (P1).
-3. Uninstall the app from Jira's Manage apps page. Stored app data is removed with the app **[VERIFY]**.
-
-## Limitations
-
-- Injection detection is heuristic and not a guarantee.
-- Changes are executed as the app; Jira's native history shows the app, so use JiraGuard's audit log for agent attribution.
-- Jira only in v1. No delete tool is exposed.
-- Revert cannot undo deletions or effects outside Jira.
-
-## Development
-
-The product Forge app is not in this repo yet. Until it exists, `npm test` is the check for `src/`. Forge commands below apply to `spike/mcp-webtrigger`, or to the product app after `forge create`.
+## Develop
 
 ```bash
-npm install -g @forge/cli
-forge login
-forge create            # or clone this repo
 npm install
-forge deploy
-forge install           # choose Jira and your dev site
-forge webtrigger list   # find the endpoint URL (if the endpoint is a webtrigger)
-forge tunnel            # local development
+npm test
 ```
 
-Test the endpoint with MCP Inspector (`npx @modelcontextprotocol/inspector`).
-
-## Third-Party Components and AI Use
-
-List every library, its source and license here, plus any AI tools used in development and for what. Required for the submission.
-
-| Component | Source | License | Purpose |
-|---|---|---|---|
-| (fill in) | | | |
+The Forge app lives in `product/`. From that directory, `npm install` and `npm run deploy` build the page and deploy the development environment. `npm test` at the repo root is the check for `src/`.
 
 ## Docs
 
-- [Collaborate](docs/COLLABORATING.md) · [Plan](PLAN.md) · [PRD](docs/PRD.md) · [Architecture](docs/ARCHITECTURE.md) · [MCP Tool Spec](docs/MCP_TOOL_SPEC.md) · [Requirements Check](docs/REQUIREMENTS_CHECK.md) · [Submission draft](docs/SUBMISSION.md)
+- [Plan](PLAN.md)
+- [PRD](docs/PRD.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [MCP tool spec](docs/MCP_TOOL_SPEC.md)
+- [How to collaborate](docs/COLLABORATING.md)
+- [Submission draft](docs/SUBMISSION.md)
 
-
-- site url from atlassian: `https://jiraguard.atlassian.net/wiki/spaces/~712020ee715c8e61f84c38b855d0f46ceac863/pages/edit-v2/294914?draftShareId=4260e79e-fe64-40e2-88f0-bd717a3bc5c4&createdWithTemplate=true`
+React 18 and the Forge SDK build the admin page. esbuild bundles it. Cursor was used during development.
