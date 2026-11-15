@@ -8,61 +8,47 @@ import { build, type Plugin } from "esbuild";
 
 const require = createRequire(import.meta.url);
 const modules = path.resolve("product/node_modules");
+const frontend = path.resolve("product/src/frontend");
 
-const forgeStub: Plugin = {
-  name: "forge-stub",
+// The page talks to Jira only through the bridge, so the stub is the whole contract.
+const bridgeStub: Plugin = {
+  name: "bridge-stub",
   setup(build) {
-    build.onResolve({ filter: /^@forge\/(react|bridge)$/ }, (args) => ({
-      path: args.path,
-      namespace: "forge-stub",
-    }));
-    build.onLoad({ filter: /.*/, namespace: "forge-stub" }, (args) => ({
+    build.onResolve({ filter: /^@forge\/bridge$/ }, (args) => ({ path: args.path, namespace: "bridge-stub" }));
+    build.onLoad({ filter: /.*/, namespace: "bridge-stub" }, (args) => ({
       loader: "js",
       resolveDir: modules,
-      contents:
-        args.path === "@forge/bridge"
-          ? "export function invoke() { return Promise.resolve(null); }"
-          : `
-              import React from "react";
-              import { renderToStaticMarkup } from "react-dom/server";
-              const pass = (props) => React.createElement("div", null, props && props.children);
-              export const Button = pass;
-              export const Checkbox = pass;
-              export const DatePicker = pass;
-              export const DynamicTable = pass;
-              export const Heading = pass;
-              export const Inline = pass;
-              export const Label = pass;
-              export const SectionMessage = pass;
-              export const SectionMessageAction = pass;
-              export const Select = pass;
-              export const Stack = pass;
-              export const Tab = pass;
-              export const TabList = pass;
-              export const TabPanel = pass;
-              export const Tabs = pass;
-              export const Text = pass;
-              export const Textfield = pass;
-              export default { render(node) { globalThis.__adminHtml = renderToStaticMarkup(node); } };
-            `,
+      contents: "export function invoke() { return Promise.resolve(null); }",
     }));
   },
 };
 
 describe("admin page", () => {
-  it("renders the heading without a missing desk binding", async () => {
+  it("renders the heading from the real React tree", async () => {
     const outfile = path.join(mkdtempSync(path.join(tmpdir(), "admin-page-")), "page.cjs");
     await build({
-      entryPoints: [path.resolve("product/src/frontend/admin.jsx")],
+      stdin: {
+        contents: [
+          `import React from "react";`,
+          `import { renderToStaticMarkup } from "react-dom/server";`,
+          `import App from "./App.jsx";`,
+          `globalThis.__adminHtml = renderToStaticMarkup(React.createElement(App));`,
+        ].join("\n"),
+        resolveDir: frontend,
+        loader: "jsx",
+        sourcefile: "page-entry.jsx",
+      },
       bundle: true,
       format: "cjs",
       platform: "node",
       outfile,
       jsx: "automatic",
       nodePaths: [modules],
-      plugins: [forgeStub],
+      plugins: [bridgeStub],
     });
     require(outfile);
     assert.match(globalThis.__adminHtml, /JiraGuard/);
+    assert.match(globalThis.__adminHtml, /Loading JiraGuard\./);
+    assert.match(globalThis.__adminHtml, /Retry/);
   });
 });
