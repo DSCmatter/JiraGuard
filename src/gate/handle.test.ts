@@ -541,6 +541,7 @@ describe("handleMcp", () => {
     const audits = await store.listAudits();
     assert.equal(audits.length, 1);
     assert.equal(audits[0]?.injectionFlagged, true);
+    assert.deepEqual(audits[0]?.injectionCodes, ["reassign"]);
     assert.equal(audits[0]?.tool, "jira_get_issue");
   });
 

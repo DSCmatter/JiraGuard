@@ -1,14 +1,15 @@
 import { randomBytes } from "node:crypto";
-import type {
-  AgentRecord,
-  AuditEvent,
-  AuditOutcome,
-  NewAudit,
-  NewPending,
-  NewPolicy,
-  PendingAction,
-  PendingStatus,
-  PolicyRecord,
+import {
+  injectionCodesFrom,
+  type AgentRecord,
+  type AuditEvent,
+  type AuditOutcome,
+  type NewAudit,
+  type NewPending,
+  type NewPolicy,
+  type PendingAction,
+  type PendingStatus,
+  type PolicyRecord,
 } from "../domain/records.ts";
 
 export const RECENT_AUDIT_LIMIT = 50;
@@ -155,6 +156,7 @@ export function createMemoryStore(): RecordStore {
         before: input.before,
         after: input.after,
         injectionFlagged: input.injectionFlagged,
+        injectionCodes: injectionCodesFrom(input.injectionCodes ?? []),
         requestId: input.requestId,
       };
       audits.push(copy(event));

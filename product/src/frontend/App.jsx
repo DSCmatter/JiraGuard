@@ -493,7 +493,7 @@ export default function App() {
                             </td>
                             <td className="mono nowrap">{event.issueKey ?? ""}</td>
                             <td>{event.injectionFlagged ? <span className="status status-flagged">flagged</span> : <span className="muted">clear</span>}</td>
-                            <td>{event.reason ?? ""}</td>
+                            <td>{event.reasonText ?? event.reason ?? ""}</td>
                           </tr>
                         ))}
                       </tbody>

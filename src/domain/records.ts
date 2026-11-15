@@ -72,6 +72,14 @@ export type PolicyRecord = {
 
 export type Json = null | string | number | boolean | Json[] | { [key: string]: Json };
 
+export const INJECTION_CODES = ["ignore_instructions", "tool_request", "exfiltrate", "reassign"] as const;
+export type InjectionCode = (typeof INJECTION_CODES)[number];
+
+export function injectionCodesFrom(values: readonly string[]): InjectionCode[] {
+  const present = new Set(values);
+  return INJECTION_CODES.filter((code) => present.has(code));
+}
+
 export type AuditEvent = {
   id: string;
   ts: string;
@@ -84,6 +92,7 @@ export type AuditEvent = {
   before: Record<string, Json> | null;
   after: Record<string, Json> | null;
   injectionFlagged: boolean;
+  injectionCodes: InjectionCode[];
   requestId: string;
 };
 
@@ -108,6 +117,9 @@ export type PendingAction = {
 
 export type NewPolicy = Omit<PolicyRecord, "id">;
 
-export type NewAudit = Omit<AuditEvent, "id" | "ts"> & { ts?: string };
+export type NewAudit = Omit<AuditEvent, "id" | "ts" | "injectionCodes"> & {
+  ts?: string;
+  injectionCodes?: readonly InjectionCode[];
+};
 
 export type NewPending = Omit<PendingAction, "id" | "createdAt" | "decidedBy" | "decidedAt" | "status">;

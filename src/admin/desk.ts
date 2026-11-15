@@ -8,6 +8,7 @@ import {
   type AgentRecord,
   type AuditEvent,
   type AuditOutcome,
+  type InjectionCode,
   type Json,
   type PolicyRecord,
   type WriteMode,
@@ -62,6 +63,8 @@ export type AuditCard = {
   before: Record<string, Json> | null;
   after: Record<string, Json> | null;
   injectionFlagged: boolean;
+  injectionCodes: InjectionCode[];
+  reasonText: string;
   requestId: string;
 };
 
@@ -582,6 +585,14 @@ function toCard(agent: AgentRecord, policy: PolicyRecord | null, lastUsedAt: str
   };
 }
 
+function auditReasonText(reason: string | null, codes: readonly InjectionCode[]): string {
+  const injection = codes.length > 0 ? `injection: ${codes.join(", ")}` : "";
+  if (reason && injection) {
+    return `${reason}; ${injection}`;
+  }
+  return reason || injection;
+}
+
 function toAuditCard(event: AuditEvent, agentName: string): AuditCard {
   return {
     id: event.id,
@@ -596,6 +607,8 @@ function toAuditCard(event: AuditEvent, agentName: string): AuditCard {
     before: event.before,
     after: event.after,
     injectionFlagged: event.injectionFlagged,
+    injectionCodes: event.injectionCodes,
+    reasonText: auditReasonText(event.reason, event.injectionCodes),
     requestId: event.requestId,
   };
 }

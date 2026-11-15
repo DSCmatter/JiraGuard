@@ -226,6 +226,49 @@ describe("admin desk", () => {
     assert.equal((await memory.getAgent(agentId))?.last_used_at, null);
   });
 
+  it("prints injection codes in the reason column and keeps a denial reason", async () => {
+    const store = createMemoryStore();
+    await store.appendAudit({
+      ts: "2026-11-15T12:47:00.000Z",
+      agentId: "agt_1",
+      tool: "jira_search_issues",
+      issueKey: null,
+      project: null,
+      outcome: "allowed",
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: true,
+      injectionCodes: ["reassign", "tool_request"],
+      requestId: "req_flag",
+    });
+    await store.appendAudit({
+      ts: "2026-11-15T12:40:00.000Z",
+      agentId: "agt_1",
+      tool: "jira_search_issues",
+      issueKey: "SPIKE-1",
+      project: "SPIKE",
+      outcome: "denied",
+      reason: "jira",
+      before: null,
+      after: null,
+      injectionFlagged: true,
+      injectionCodes: ["exfiltrate"],
+      requestId: "req_deny",
+    });
+    const opened = await handleAdmin(depsFor(store), { type: "open" });
+    assert.equal(opened.type, "desk");
+    if (opened.type !== "desk") {
+      return;
+    }
+    const [flagged, denied] = opened.desk.audit.events;
+    assert.equal(flagged?.reason, null);
+    assert.equal(flagged?.reasonText, "injection: tool_request, reassign");
+    assert.deepEqual(flagged?.injectionCodes, ["tool_request", "reassign"]);
+    assert.equal(denied?.reason, "jira");
+    assert.equal(denied?.reasonText, "jira; injection: exfiltrate");
+  });
+
   it("uses a setup hint for an empty log and a different hint when a filter matches nothing", async () => {
     const store = createMemoryStore();
     const deps = depsFor(store);
