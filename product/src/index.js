@@ -1567,6 +1567,7 @@ function audit(action, outcome, reason, before, after) {
 }
 
 // src/storage/memory.ts
+var RECENT_AUDIT_LIMIT = 50;
 function auditMatches(event, query) {
   if (query?.agentId !== void 0 && event.agentId !== query.agentId) {
     return false;
@@ -1587,6 +1588,11 @@ function auditMatches(event, query) {
     return false;
   }
   return true;
+}
+function keepRecent(rows, row2) {
+  const next = [row2, ...rows.filter((item) => item.id !== row2.id)];
+  next.sort((left, right) => left.ts < right.ts ? 1 : left.ts > right.ts ? -1 : 0);
+  return next.slice(0, RECENT_AUDIT_LIMIT);
 }
 function earlier(left, right) {
   const start = Date.parse(left);
@@ -1953,15 +1959,17 @@ async function buildDesk(deps, filter) {
   const agents = await deps.store.listAgents();
   const policies = await deps.store.listPolicies();
   const approvals = await listApprovalQueue(deps.store);
-  const history = await deps.store.listAudits();
-  const events = history.filter((event) => auditMatches(event, toQuery(filter)));
+  const recent = await deps.store.recentAudits();
+  const events = recent.filter((event) => auditMatches(event, toQuery(filter)));
   const policyById = new Map(policies.map((policy) => [policy.id, policy]));
   const nameById = new Map(agents.map((agent) => [agent.id, agent.name]));
-  const lastUsed = /* @__PURE__ */ new Map();
-  for (const event of history) {
-    lastUsed.set(event.agentId, later(lastUsed.get(event.agentId), event.ts));
+  const ordered = [...agents].sort(
+    (left, right) => left.created_at < right.created_at ? 1 : left.created_at > right.created_at ? -1 : 0
+  );
+  const cards = [];
+  for (const agent of ordered) {
+    cards.push(toCard(agent, policyById.get(agent.policy_id) ?? null, await deps.store.lastUse(agent.id)));
   }
-  const cards = [...agents].sort((left, right) => left.created_at < right.created_at ? 1 : left.created_at > right.created_at ? -1 : 0).map((agent) => toCard(agent, policyById.get(agent.policy_id) ?? null, lastUsed.get(agent.id) ?? null));
   return {
     endpointUrl: deps.endpointUrl,
     toolChoices: catalogToolNames(),
@@ -1986,20 +1994,6 @@ function toQuery(filter) {
     ...filter.to !== void 0 ? { to: filter.to } : {},
     ...filter.injectionFlagged === true ? { injectionFlagged: true } : {}
   };
-}
-function later(current, next) {
-  if (current === void 0) {
-    return next;
-  }
-  const left = Date.parse(current);
-  const right = Date.parse(next);
-  if (Number.isNaN(right)) {
-    return current;
-  }
-  if (Number.isNaN(left)) {
-    return next;
-  }
-  return right >= left ? next : current;
 }
 function toCard(agent, policy, lastUsedAt) {
   return {
@@ -2234,6 +2228,7 @@ async function ensureProofAgent(store2, spec) {
 var import_node_crypto2 = require("crypto");
 var AGENTS = "index:agents";
 var POLICIES = "index:policies";
+var RECENT = "index:audit-recent";
 var LOCK_TTL_MS = 15e3;
 var LOCK_WAIT_MS = 12e3;
 var LOCK_PAUSE_MS = 50;
@@ -2281,6 +2276,8 @@ function createKvsStore(kv) {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
+      await noteRecent(kv, event);
+      await noteUse(kv, event);
       return event;
     },
     async listAudits(query) {
@@ -2293,6 +2290,21 @@ function createKvsStore(kv) {
         }
       }
       return records;
+    },
+    async recentAudits() {
+      const ids = await readRecent(kv);
+      const records = [];
+      for (const id of ids) {
+        const event = await readRecord(kv, auditKey(id));
+        if (event) {
+          records.push(event);
+        }
+      }
+      return records;
+    },
+    async lastUse(agentId) {
+      const value = await kv.get(useKey(agentId));
+      return typeof value === "string" ? value : null;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -2379,6 +2391,36 @@ function policyKey(id) {
 }
 function auditKey(id) {
   return `audit:${id}`;
+}
+function useKey(agentId) {
+  return `use:${agentId}`;
+}
+async function noteRecent(kv, event) {
+  await withLock(kv, `lock:${RECENT}`, async () => {
+    const rows = await readRecentRows(kv);
+    await kv.set(RECENT, keepRecent(rows, { id: event.id, ts: event.ts }));
+  });
+}
+async function noteUse(kv, event) {
+  const key = useKey(event.agentId);
+  const current = await kv.get(key);
+  if (typeof current === "string" && current >= event.ts) {
+    return;
+  }
+  await kv.set(key, event.ts);
+}
+async function readRecent(kv) {
+  const rows = await readRecentRows(kv);
+  return rows.map((row2) => row2.id);
+}
+async function readRecentRows(kv) {
+  const value = await kv.get(RECENT);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item) => !!item && typeof item === "object" && !Array.isArray(item) && typeof item.id === "string" && typeof item.ts === "string"
+  );
 }
 function pendingKey(id) {
   return `pending:${id}`;

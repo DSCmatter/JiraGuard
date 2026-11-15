@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { resolveToken } from "../auth/token.ts";
 import { DEFAULT_POLICY_LIMITS } from "../domain/records.ts";
 import type { JiraWork } from "../gate/handle.ts";
-import { createMemoryStore, type AuditQuery, type RecordStore } from "../storage/memory.ts";
+import { RECENT_AUDIT_LIMIT, createMemoryStore, type AuditQuery, type RecordStore } from "../storage/memory.ts";
 import { handleAdmin, parseAccountId, type AdminDeps } from "./desk.ts";
 
 const ENDPOINT = "https://example.test/mcp";
@@ -215,8 +215,7 @@ describe("admin desk", () => {
     if (filtered.type !== "desk") {
       return;
     }
-    assert.equal(queries.length, 1);
-    assert.equal(queries[0], undefined);
+    assert.equal(queries.length, 0);
     assert.deepEqual(
       filtered.desk.audit.events.map((event) => event.id),
       [flagged.id],
@@ -348,6 +347,45 @@ describe("admin desk", () => {
 
     const opened = await handleAdmin(depsFor(store, null), { type: "open" });
     assert.equal(opened.type, "desk");
+  });
+
+  it("shows the newest audit page and keeps last use after older rows drop off", async () => {
+    const store = createMemoryStore();
+    const deps = depsFor(store);
+    const created = await handleAdmin(deps, createCommand);
+    assert.equal(created.type, "created");
+    if (created.type !== "created") {
+      return;
+    }
+    const agentId = created.desk.agents[0]?.id;
+    assert.ok(agentId);
+    let oldest = "";
+    for (let index = 0; index <= RECENT_AUDIT_LIMIT; index += 1) {
+      const saved = await store.appendAudit({
+        ts: `2026-11-14T00:00:${String(index).padStart(2, "0")}.000Z`,
+        agentId,
+        tool: "guard_whoami",
+        issueKey: null,
+        project: null,
+        outcome: "allowed",
+        reason: null,
+        before: null,
+        after: null,
+        injectionFlagged: false,
+        requestId: `req_${index}`,
+      });
+      if (index === 0) {
+        oldest = saved.id;
+      }
+    }
+    const opened = await handleAdmin(deps, { type: "open" });
+    assert.equal(opened.type, "desk");
+    if (opened.type !== "desk") {
+      return;
+    }
+    assert.equal(opened.desk.audit.events.length, RECENT_AUDIT_LIMIT);
+    assert.equal(opened.desk.audit.events.some((event) => event.id === oldest), false);
+    assert.equal(opened.desk.agents[0]?.lastUsedAt, `2026-11-14T00:00:${String(RECENT_AUDIT_LIMIT).padStart(2, "0")}.000Z`);
   });
 
   it("reads an account id only from a non-empty string", () => {

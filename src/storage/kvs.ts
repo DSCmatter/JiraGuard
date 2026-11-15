@@ -8,7 +8,13 @@ import type {
   PendingAction,
   PolicyRecord,
 } from "../domain/records.ts";
-import { auditMatches, type AuditQuery, type PendingQuery, type RecordStore } from "./memory.ts";
+import {
+  auditMatches,
+  keepRecent,
+  type AuditQuery,
+  type PendingQuery,
+  type RecordStore,
+} from "./memory.ts";
 
 export type KeyValue = {
   get(key: string): Promise<unknown>;
@@ -20,6 +26,7 @@ export type KeyValue = {
 
 const AGENTS = "index:agents";
 const POLICIES = "index:policies";
+const RECENT = "index:audit-recent";
 const LOCK_TTL_MS = 15_000;
 const LOCK_WAIT_MS = 12_000;
 const LOCK_PAUSE_MS = 50;
@@ -68,6 +75,8 @@ export function createKvsStore(kv: KeyValue): RecordStore {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
+      await noteRecent(kv, event);
+      await noteUse(kv, event);
       return event;
     },
     async listAudits(query) {
@@ -80,6 +89,21 @@ export function createKvsStore(kv: KeyValue): RecordStore {
         }
       }
       return records;
+    },
+    async recentAudits() {
+      const ids = await readRecent(kv);
+      const records: AuditEvent[] = [];
+      for (const id of ids) {
+        const event = await readRecord<AuditEvent>(kv, auditKey(id));
+        if (event) {
+          records.push(event);
+        }
+      }
+      return records;
+    },
+    async lastUse(agentId) {
+      const value = await kv.get(useKey(agentId));
+      return typeof value === "string" ? value : null;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -172,6 +196,46 @@ function policyKey(id: string): string {
 
 function auditKey(id: string): string {
   return `audit:${id}`;
+}
+
+function useKey(agentId: string): string {
+  return `use:${agentId}`;
+}
+
+async function noteRecent(kv: KeyValue, event: AuditEvent): Promise<void> {
+  await withLock(kv, `lock:${RECENT}`, async () => {
+    const rows = await readRecentRows(kv);
+    await kv.set(RECENT, keepRecent(rows, { id: event.id, ts: event.ts }));
+  });
+}
+
+async function noteUse(kv: KeyValue, event: AuditEvent): Promise<void> {
+  const key = useKey(event.agentId);
+  const current = await kv.get(key);
+  if (typeof current === "string" && current >= event.ts) {
+    return;
+  }
+  await kv.set(key, event.ts);
+}
+
+async function readRecent(kv: KeyValue): Promise<string[]> {
+  const rows = await readRecentRows(kv);
+  return rows.map((row) => row.id);
+}
+
+async function readRecentRows(kv: KeyValue): Promise<Array<{ id: string; ts: string }>> {
+  const value = await kv.get(RECENT);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is { id: string; ts: string } =>
+      !!item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      typeof (item as { id?: unknown }).id === "string" &&
+      typeof (item as { ts?: unknown }).ts === "string",
+  );
 }
 
 function pendingKey(id: string): string {

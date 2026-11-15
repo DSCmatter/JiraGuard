@@ -11,6 +11,8 @@ import type {
   PolicyRecord,
 } from "../domain/records.ts";
 
+export const RECENT_AUDIT_LIMIT = 50;
+
 export type AuditQuery = {
   agentId?: string;
   outcome?: AuditOutcome;
@@ -42,6 +44,12 @@ export function auditMatches(event: AuditEvent, query: AuditQuery | undefined): 
   return true;
 }
 
+export function keepRecent<T extends { id: string; ts: string }>(rows: readonly T[], row: T): T[] {
+  const next = [row, ...rows.filter((item) => item.id !== row.id)];
+  next.sort((left, right) => (left.ts < right.ts ? 1 : left.ts > right.ts ? -1 : 0));
+  return next.slice(0, RECENT_AUDIT_LIMIT);
+}
+
 function earlier(left: string, right: string): boolean {
   const start = Date.parse(left);
   const end = Date.parse(right);
@@ -69,6 +77,8 @@ export type RecordStore = {
   listPolicies(): Promise<PolicyRecord[]>;
   appendAudit(input: NewAudit): Promise<AuditEvent>;
   listAudits(query?: AuditQuery): Promise<AuditEvent[]>;
+  recentAudits(): Promise<AuditEvent[]>;
+  lastUse(agentId: string): Promise<string | null>;
   createPending(input: NewPending): Promise<PendingAction>;
   getPending(id: string): Promise<PendingAction | null>;
   listPending(query?: PendingQuery): Promise<PendingAction[]>;
@@ -88,6 +98,8 @@ export function createMemoryStore(): RecordStore {
   const agents = new Map<string, AgentRecord>();
   const policies = new Map<string, PolicyRecord>();
   const audits: AuditEvent[] = [];
+  const recent: AuditEvent[] = [];
+  const uses = new Map<string, string>();
   const pending: PendingAction[] = [];
 
   return {
@@ -146,10 +158,23 @@ export function createMemoryStore(): RecordStore {
         requestId: input.requestId,
       };
       audits.push(copy(event));
+      const kept = keepRecent(recent, event);
+      recent.length = 0;
+      recent.push(...kept.map((item) => copy(item)));
+      const seen = uses.get(event.agentId);
+      if (seen === undefined || seen < event.ts) {
+        uses.set(event.agentId, event.ts);
+      }
       return copy(event);
     },
     async listAudits(query) {
       return audits.filter((event) => auditMatches(event, query)).map((event) => copy(event));
+    },
+    async recentAudits() {
+      return recent.map((event) => copy(event));
+    },
+    async lastUse(agentId) {
+      return uses.get(agentId) ?? null;
     },
     async createPending(input) {
       const action: PendingAction = {
