@@ -5,6 +5,9 @@
     "build": "node build-frontend.mjs",
     "deploy": "npm run build && forge deploy -e development"
   },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
   "dependencies": {
     "@forge/api": "^8.5.0",
     "@forge/bridge": "^7.3.0",

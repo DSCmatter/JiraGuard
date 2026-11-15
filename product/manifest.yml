@@ -1,10 +1,4 @@
 modules:
-  jira:globalPage:
-    - key: jiraguard-app
-      resource: admin
-      title: JiraGuard
-      resolver:
-        function: admin-resolver
   jira:adminPage:
     - key: jiraguard-admin
       resource: admin

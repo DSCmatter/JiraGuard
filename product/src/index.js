@@ -1011,20 +1011,7 @@ async function handleCall(message, token, id, deps) {
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     const diff = diffWithBefore(call, decision.diff, before);
-    const action = await deps.store.createPending({
-      agentId: holder,
-      tool: call.tool,
-      args: { ...pendingArgs(call), before },
-      issueKey,
-      diff
-    });
     const projected = projectPending(call, issueKey, diff, before);
-    const body = envelope(
-      "pending_approval",
-      { actionId: action.id, diff: projected.diff },
-      heldMessage(action.id),
-      projected.reasons
-    );
     const saved2 = await keepAudit(
       deps.store,
       row(
@@ -1033,17 +1020,32 @@ async function handleCall(message, token, id, deps) {
         "pending",
         null,
         id,
-        body.guard.flagged,
+        projected.reasons.length > 0,
         null,
         null,
-        injectionCodesFrom(body.guard.reasons.map((reason) => reason.code))
+        injectionCodesFrom(projected.reasons.map((reason) => reason.code))
       )
     );
     if (!saved2) {
-      await deps.store.finishPending(action.id, "expired", "system");
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(id, body, false);
+    const action = await deps.store.createPending({
+      agentId: holder,
+      tool: call.tool,
+      args: { ...pendingArgs(call), before },
+      issueKey,
+      diff
+    });
+    return toolResult(
+      id,
+      envelope(
+        "pending_approval",
+        { actionId: action.id, diff: projected.diff },
+        heldMessage(action.id),
+        projected.reasons
+      ),
+      false
+    );
   }
   const agent = await resolveToken(deps.store, token);
   const policy = agent ? await deps.store.getPolicy(agent.policy_id) : null;
@@ -2643,6 +2645,9 @@ async function mcpHandler(request) {
 }
 var adminResolver = (0, import_resolver.makeResolver)({
   async run(request) {
+    if (!await callerIsAdmin()) {
+      return { type: "rejected", reason: "Jira admin permission is required.", desk: null };
+    }
     return handleAdmin(
       {
         store,
@@ -2654,6 +2659,20 @@ var adminResolver = (0, import_resolver.makeResolver)({
     );
   }
 });
+async function callerIsAdmin() {
+  try {
+    const response = await (0, import_api.asUser)().requestJira(import_api.route`/rest/api/3/mypermissions?permissions=ADMINISTER`, {
+      headers: { Accept: "application/json" }
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = await response.json();
+    return body.permissions?.ADMINISTER?.havePermission === true;
+  } catch {
+    return false;
+  }
+}
 async function endpointUrlOrBlank() {
   try {
     const url = await import_api.webTrigger.getUrl("mcp-endpoint");

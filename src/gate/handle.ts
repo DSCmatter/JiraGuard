@@ -781,20 +781,7 @@ async function handleCall(
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     const diff = diffWithBefore(call, decision.diff, before);
-    const action = await deps.store.createPending({
-      agentId: holder,
-      tool: call.tool,
-      args: { ...pendingArgs(call), before },
-      issueKey,
-      diff,
-    });
     const projected = projectPending(call, issueKey, diff, before);
-    const body = envelope(
-      "pending_approval",
-      { actionId: action.id, diff: projected.diff },
-      heldMessage(action.id),
-      projected.reasons,
-    );
     const saved = await keepAudit(
       deps.store,
       row(
@@ -803,17 +790,32 @@ async function handleCall(
         "pending",
         null,
         id,
-        body.guard.flagged,
+        projected.reasons.length > 0,
         null,
         null,
-        injectionCodesFrom(body.guard.reasons.map((reason) => reason.code)),
+        injectionCodesFrom(projected.reasons.map((reason) => reason.code)),
       ),
     );
     if (!saved) {
-      await deps.store.finishPending(action.id, "expired", "system");
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
-    return toolResult(id, body, false);
+    const action = await deps.store.createPending({
+      agentId: holder,
+      tool: call.tool,
+      args: { ...pendingArgs(call), before },
+      issueKey,
+      diff,
+    });
+    return toolResult(
+      id,
+      envelope(
+        "pending_approval",
+        { actionId: action.id, diff: projected.diff },
+        heldMessage(action.id),
+        projected.reasons,
+      ),
+      false,
+    );
   }
 
   const agent = await resolveToken(deps.store, token);

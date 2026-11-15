@@ -14,7 +14,7 @@ mkdirSync(outdir, { recursive: true });
 await esbuild.build({
   entryPoints: [path.join(root, "src", "frontend", "main.jsx")],
   outdir,
-  entryNames: "app",
+  entryNames: "guard",
   bundle: true,
   format: "iife",
   platform: "browser",
@@ -27,7 +27,7 @@ await esbuild.build({
   logLevel: "info",
 });
 
-// Inline rather than generated from a template: the frame must load app.css and app.js by relative path.
+// The frame must load guard.css and guard.js by relative path. A cached 404 of the old names would leave the page on Jira's grey bars.
 writeFileSync(
   path.join(outdir, "index.html"),
   [
@@ -37,11 +37,11 @@ writeFileSync(
     '    <meta charset="utf-8" />',
     '    <meta name="viewport" content="width=device-width, initial-scale=1" />',
     "    <title>JiraGuard</title>",
-    '    <link rel="stylesheet" href="./app.css" />',
+    '    <link rel="stylesheet" href="./guard.css" />',
     "  </head>",
     "  <body>",
     '    <div id="root"></div>',
-    '    <script src="./app.js"></script>',
+    '    <script src="./guard.js"></script>',
     "  </body>",
     "</html>",
     "",
