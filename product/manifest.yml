@@ -1,9 +1,14 @@
 modules:
+  jira:globalPage:
+    - key: jiraguard-app
+      resource: admin
+      title: JiraGuard
+      resolver:
+        function: admin-resolver
   jira:adminPage:
     - key: jiraguard-admin
       resource: admin
       title: JiraGuard
-      render: native
       resolver:
         function: admin-resolver
   webtrigger:
@@ -21,7 +26,7 @@ modules:
       handler: index.adminResolver
 resources:
   - key: admin
-    path: src/frontend/admin.jsx
+    path: static/admin-ui
 permissions:
   scopes:
     - read:jira-work
