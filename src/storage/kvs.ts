@@ -1,12 +1,13 @@
 import { randomBytes } from "node:crypto";
-import type {
-  AgentRecord,
-  AuditEvent,
-  NewAudit,
-  NewPending,
-  NewPolicy,
-  PendingAction,
-  PolicyRecord,
+import {
+  injectionCodesFrom,
+  type AgentRecord,
+  type AuditEvent,
+  type NewAudit,
+  type NewPending,
+  type NewPolicy,
+  type PendingAction,
+  type PolicyRecord,
 } from "../domain/records.ts";
 import {
   auditMatches,
@@ -83,7 +84,7 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       const rows = await kv.list("audit:");
       const records: AuditEvent[] = [];
       for (const row of rows) {
-        const event = row.value as AuditEvent | null | undefined;
+        const event = asAudit(row.value);
         if (event && matchesAudit(event, query)) {
           records.push(event);
         }
@@ -96,7 +97,7 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       for (const id of ids) {
         const event = await readRecord<AuditEvent>(kv, auditKey(id));
         if (event) {
-          records.push(event);
+          records.push(withInjectionCodes(event));
         }
       }
       return records;
@@ -259,6 +260,7 @@ function auditFrom(input: NewAudit): AuditEvent {
     before: input.before,
     after: input.after,
     injectionFlagged: input.injectionFlagged,
+    injectionCodes: injectionCodesFrom(input.injectionCodes ?? []),
     requestId: input.requestId,
   };
 }
@@ -341,6 +343,20 @@ async function readIds(kv: KeyValue, index: string): Promise<string[]> {
     return [];
   }
   return value.filter((item): item is string => typeof item === "string");
+}
+
+// Rows written before injection codes existed omit the array. A stored list can also repeat a code or include a string that is not a matcher.
+function asAudit(value: unknown): AuditEvent | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return withInjectionCodes(value as AuditEvent);
+}
+
+function withInjectionCodes(event: AuditEvent): AuditEvent {
+  const raw: unknown = event.injectionCodes;
+  const codes = Array.isArray(raw) ? raw.filter((item): item is string => typeof item === "string") : [];
+  return { ...event, injectionCodes: injectionCodesFrom(codes) };
 }
 
 async function readRecord<T>(kv: KeyValue, key: string): Promise<T | null> {

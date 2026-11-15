@@ -1,5 +1,15 @@
 import { registerAgent, resolveToken } from "../auth/token.ts";
-import type { AgentRecord, AuditOutcome, FieldDiff, Json, PolicyRecord, RateLimit, WriteMode } from "../domain/records.ts";
+import {
+  injectionCodesFrom,
+  type AgentRecord,
+  type AuditOutcome,
+  type FieldDiff,
+  type InjectionCode,
+  type Json,
+  type PolicyRecord,
+  type RateLimit,
+  type WriteMode,
+} from "../domain/records.ts";
 import { guardIssueList, type GuardReason, type IssueProse } from "../guard/untrusted.ts";
 import { nextCall, searchProjectJql } from "../policy/decide.ts";
 import type { DecisionRequest } from "../policy/decide.ts";
@@ -565,6 +575,7 @@ async function keepAudit(
     outcome: AuditOutcome;
     reason: string | null;
     injectionFlagged: boolean;
+    injectionCodes?: readonly InjectionCode[];
     before?: Record<string, Json> | null;
     after?: Record<string, Json> | null;
     requestId: string;
@@ -581,6 +592,7 @@ async function keepAudit(
       before: draft.before ?? null,
       after: draft.after ?? null,
       injectionFlagged: draft.injectionFlagged,
+      injectionCodes: draft.injectionCodes,
       requestId: draft.requestId,
     });
     return true;
@@ -608,6 +620,7 @@ function row(
   injectionFlagged: boolean,
   after: Record<string, Json> | null = null,
   before: Record<string, Json> | null = null,
+  injectionCodes: readonly InjectionCode[] = [],
 ) {
   return {
     agentId: agent,
@@ -618,6 +631,7 @@ function row(
     before,
     after,
     injectionFlagged,
+    injectionCodes,
     requestId: requestLabel(id),
   };
 }
@@ -767,6 +781,24 @@ async function handleCall(
       return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
     }
     const diff = diffWithBefore(call, decision.diff, before);
+    const projected = projectPending(call, issueKey, diff, before);
+    const saved = await keepAudit(
+      deps.store,
+      row(
+        request,
+        holder,
+        "pending",
+        null,
+        id,
+        projected.reasons.length > 0,
+        null,
+        null,
+        injectionCodesFrom(projected.reasons.map((reason) => reason.code)),
+      ),
+    );
+    if (!saved) {
+      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
+    }
     const action = await deps.store.createPending({
       agentId: holder,
       tool: call.tool,
@@ -774,19 +806,16 @@ async function handleCall(
       issueKey,
       diff,
     });
-    const projected = projectPending(call, issueKey, diff, before);
-    const body = envelope(
-      "pending_approval",
-      { actionId: action.id, diff: projected.diff },
-      heldMessage(action.id),
-      projected.reasons,
+    return toolResult(
+      id,
+      envelope(
+        "pending_approval",
+        { actionId: action.id, diff: projected.diff },
+        heldMessage(action.id),
+        projected.reasons,
+      ),
+      false,
     );
-    const saved = await keepAudit(deps.store, row(request, holder, "pending", null, id, body.guard.flagged));
-    if (!saved) {
-      await deps.store.finishPending(action.id, "expired", "system");
-      return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
-    }
-    return toolResult(id, body, false);
   }
 
   const agent = await resolveToken(deps.store, token);
@@ -828,7 +857,20 @@ async function handleCall(
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }
   const shown = withGuard(parsed.call, fetched);
-  const saved = await keepAudit(deps.store, row(request, agent.id, "allowed", null, id, shown.guard.flagged));
+  const saved = await keepAudit(
+    deps.store,
+    row(
+      request,
+      agent.id,
+      "allowed",
+      null,
+      id,
+      shown.guard.flagged,
+      null,
+      null,
+      injectionCodesFrom(shown.guard.reasons.map((reason) => reason.code)),
+    ),
+  );
   if (!saved) {
     return toolResult(id, envelope("error", {}, FAIL_CLOSED), true);
   }

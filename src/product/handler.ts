@@ -1,4 +1,4 @@
-import { asApp, route, webTrigger } from "@forge/api";
+import { asApp, asUser, route, webTrigger } from "@forge/api";
 import { makeResolver, type Request } from "@forge/resolver";
 import { ForgeKvsAPIError, kvs, WhereConditions } from "@forge/kvs";
 import { handleAdmin, parseAccountId } from "../admin/desk.ts";
@@ -64,6 +64,9 @@ export async function mcpHandler(request: WebtriggerRequest): Promise<Webtrigger
 
 export const adminResolver = makeResolver({
   async run(request: Request) {
+    if (!(await callerIsAdmin())) {
+      return { type: "rejected", reason: "Jira admin permission is required.", desk: null };
+    }
     return handleAdmin(
       {
         store,
@@ -75,6 +78,23 @@ export const adminResolver = makeResolver({
     );
   },
 });
+
+async function callerIsAdmin(): Promise<boolean> {
+  try {
+    const response = await asUser().requestJira(route`/rest/api/3/mypermissions?permissions=ADMINISTER`, {
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) {
+      return false;
+    }
+    const body = (await response.json()) as {
+      permissions?: { ADMINISTER?: { havePermission?: boolean } };
+    };
+    return body.permissions?.ADMINISTER?.havePermission === true;
+  } catch {
+    return false;
+  }
+}
 
 async function endpointUrlOrBlank(): Promise<string> {
   try {

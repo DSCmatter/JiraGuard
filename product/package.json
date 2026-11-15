@@ -1,12 +1,19 @@
 {
   "name": "jiraguard-product",
   "private": true,
+  "scripts": {
+    "build": "node build-frontend.mjs",
+    "deploy": "npm run build && forge deploy -e development"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2"
+  },
   "dependencies": {
     "@forge/api": "^8.5.0",
     "@forge/bridge": "^7.3.0",
     "@forge/kvs": "^2.1.2",
-    "@forge/react": "^12.5.0",
     "@forge/resolver": "^2.0.2",
-    "react": "^18.3.1"
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
   }
 }

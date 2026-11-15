@@ -109,6 +109,48 @@ describe("kvs store", () => {
     assert.deepEqual(listed.map((event) => event.issueKey).sort(), ["SPIKE-1", "SPIKE-2"]);
   });
 
+  it("reads injection codes from audit rows written before the field existed", async () => {
+    const kv = memoryKv();
+    const older = {
+      id: "evt_old",
+      ts: "2026-11-15T12:44:00.000Z",
+      agentId: "agt_1",
+      tool: "jira_get_issue",
+      issueKey: "SPIKE-1",
+      project: "SPIKE",
+      outcome: "allowed" as const,
+      reason: null,
+      before: null,
+      after: null,
+      injectionFlagged: true,
+      requestId: "req_old",
+    };
+    const messy = {
+      ...older,
+      id: "evt_messy",
+      ts: "2026-11-15T12:47:00.000Z",
+      tool: "jira_search_issues",
+      issueKey: null,
+      injectionCodes: ["reassign", "not-a-code", "tool_request", "tool_request"],
+    };
+    await kv.set("audit:evt_old", older);
+    await kv.set("audit:evt_messy", messy);
+    await kv.set("index:audit-recent", [
+      { id: "evt_messy", ts: messy.ts },
+      { id: "evt_old", ts: older.ts },
+    ]);
+    const store = createKvsStore(kv);
+    const listed = await store.listAudits();
+    const byId = new Map(listed.map((event) => [event.id, event.injectionCodes]));
+    assert.deepEqual(byId.get("evt_old"), []);
+    assert.deepEqual(byId.get("evt_messy"), ["tool_request", "reassign"]);
+    const recent = await store.recentAudits();
+    assert.deepEqual(
+      recent.map((event) => event.injectionCodes),
+      [["tool_request", "reassign"], []],
+    );
+  });
+
   it("keeps both actions when two holds overlap", async () => {
     const store = createKvsStore(memoryKv());
     const draft = {

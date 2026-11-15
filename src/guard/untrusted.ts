@@ -1,4 +1,6 @@
-import type { Json } from "../domain/records.ts";
+import { INJECTION_CODES, type InjectionCode, type Json } from "../domain/records.ts";
+
+export type { InjectionCode };
 
 const PROSE_FIELDS = {
   "jira:summary": { shape: "value", field: "summary" },
@@ -9,7 +11,7 @@ const PROSE_FIELDS = {
 
 export type ProseSource = keyof typeof PROSE_FIELDS;
 
-const MATCHERS = {
+const MATCHERS: Record<InjectionCode, readonly RegExp[]> = {
   ignore_instructions: [
     /\bignore\b[^.\n]{0,40}\b(previous|prior|above|all)\b[^.\n]{0,24}\b(instructions|prompts|rules)\b/i,
     /\bdisregard\b[^.\n]{0,40}\b(instructions|rules|prompt)\b/i,
@@ -27,9 +29,7 @@ const MATCHERS = {
     /\bassign\b[^.\n]{0,40}\b(issues|tickets)\b/i,
     /\bchange (the )?assignee\b/i,
   ],
-} as const;
-
-export type InjectionCode = keyof typeof MATCHERS;
+};
 
 export type GuardReason = {
   code: InjectionCode;
@@ -48,7 +48,7 @@ export type GuardedIssues = {
 };
 
 const PROSE_ORDER = Object.keys(PROSE_FIELDS).filter(isProseSource);
-const MATCHER_ORDER = Object.keys(MATCHERS).filter(isInjectionCode);
+const MATCHER_ORDER = INJECTION_CODES;
 
 const INLINE_TYPES = new Set(["text", "hardBreak", "mention", "emoji", "inlineCard", "status", "date", "placeholder", "mediaInline"]);
 
@@ -92,10 +92,6 @@ export function guardIssueList(issues: readonly IssueProse[]): GuardedIssues {
 
 function isProseSource(value: string): value is ProseSource {
   return Object.prototype.hasOwnProperty.call(PROSE_FIELDS, value);
-}
-
-function isInjectionCode(value: string): value is InjectionCode {
-  return Object.prototype.hasOwnProperty.call(MATCHERS, value);
 }
 
 function guardComments(

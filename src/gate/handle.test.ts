@@ -296,7 +296,7 @@ describe("handleMcp", () => {
     assert.equal((await store.listPending({ status: "pending" })).length, 1);
   });
 
-  it("expires the held action when the pending audit cannot be stored", async () => {
+  it("does not queue a hold when the pending audit cannot be stored", async () => {
     const store = createMemoryStore();
     const { token } = await seed(store, { writeMode: "approve", allowedTools: ["jira_add_comment"] });
     store.appendAudit = async () => {
@@ -307,8 +307,7 @@ describe("handleMcp", () => {
       jira: port(),
     });
     assert.equal(structured(response).status, "error");
-    assert.equal((await store.listPending({ status: "pending" })).length, 0);
-    assert.equal((await store.listPending())[0]?.status, "expired");
+    assert.equal((await store.listPending()).length, 0);
   });
 
   it("sends the agent name on an allowed comment", async () => {
@@ -541,6 +540,7 @@ describe("handleMcp", () => {
     const audits = await store.listAudits();
     assert.equal(audits.length, 1);
     assert.equal(audits[0]?.injectionFlagged, true);
+    assert.deepEqual(audits[0]?.injectionCodes, ["reassign"]);
     assert.equal(audits[0]?.tool, "jira_get_issue");
   });
 
