@@ -1,4 +1,11 @@
 modules:
+  jira:adminPage:
+    - key: jiraguard-admin
+      resource: admin
+      title: JiraGuard
+      render: native
+      resolver:
+        function: admin-resolver
   webtrigger:
     - key: mcp-endpoint
       function: mcp
@@ -10,6 +17,11 @@ modules:
   function:
     - key: mcp
       handler: index.mcpHandler
+    - key: admin-resolver
+      handler: index.adminResolver
+resources:
+  - key: admin
+    path: src/frontend/admin.jsx
 permissions:
   scopes:
     - read:jira-work

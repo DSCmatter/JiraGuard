@@ -48,7 +48,5 @@ export async function revokeAgent(store: RecordStore, id: string): Promise<Agent
   if (!agent) {
     return null;
   }
-  const revoked: AgentRecord = { ...agent, status: "revoked" };
-  await store.putAgent(revoked);
-  return revoked;
+  return store.patchAgent(id, { status: "revoked" });
 }

@@ -22,7 +22,9 @@ function memoryKv(): KeyValue {
       values.delete(key);
     },
     async list(prefix) {
-      return [...values.keys()].filter((key) => key.startsWith(prefix));
+      return [...values.entries()]
+        .filter(([key]) => key.startsWith(prefix))
+        .map(([key, value]) => ({ key, value }));
     },
   };
 }
@@ -83,7 +85,9 @@ describe("kvs store", () => {
         values.delete(key);
       },
       async list(prefix) {
-        return [...values.keys()].filter((key) => key.startsWith(prefix));
+        return [...values.entries()]
+          .filter(([key]) => key.startsWith(prefix))
+          .map(([key, value]) => ({ key, value }));
       },
     };
     const store = createKvsStore(kv);
@@ -133,5 +137,76 @@ describe("kvs store", () => {
     const claimed = await Promise.all([store.claimPending(action.id), store.claimPending(action.id)]);
     assert.equal(claimed.filter((row) => row !== null).length, 1);
     assert.equal((await store.getPending(action.id))?.status, "claimed");
+  });
+
+  it("keeps a revoke and a policy change that overlap", async () => {
+    const store = createKvsStore(memoryKv());
+    await store.putAgent({
+      id: "agt_race",
+      name: "race",
+      description: "",
+      token_hash: "cd".repeat(32),
+      status: "active",
+      created_by: "admin",
+      created_at: "2026-11-14T00:00:00.000Z",
+      last_used_at: null,
+      policy_id: "pol_old",
+    });
+    await Promise.all([
+      store.patchAgent("agt_race", { status: "revoked" }),
+      store.patchAgent("agt_race", { policy_id: "pol_new" }),
+    ]);
+    const agent = await store.getAgent("agt_race");
+    assert.equal(agent?.status, "revoked");
+    assert.equal(agent?.policy_id, "pol_new");
+  });
+
+  it("lists both agents when two creates overlap", async () => {
+    const store = createKvsStore(memoryKv());
+    await Promise.all([
+      store.putAgent({
+        id: "agt_a",
+        name: "a",
+        description: "",
+        token_hash: "aa".repeat(32),
+        status: "active",
+        created_by: "admin",
+        created_at: "2026-11-14T00:00:00.000Z",
+        last_used_at: null,
+        policy_id: "pol_a",
+      }),
+      store.putAgent({
+        id: "agt_b",
+        name: "b",
+        description: "",
+        token_hash: "bb".repeat(32),
+        status: "active",
+        created_by: "admin",
+        created_at: "2026-11-14T00:00:00.000Z",
+        last_used_at: null,
+        policy_id: "pol_b",
+      }),
+    ]);
+    const ids = (await store.listAgents()).map((agent) => agent.id).sort();
+    assert.deepEqual(ids, ["agt_a", "agt_b"]);
+  });
+
+  it("replaces an expired agent lock", async () => {
+    const kv = memoryKv();
+    const store = createKvsStore(kv);
+    await store.putAgent({
+      id: "agt_stale",
+      name: "stale",
+      description: "",
+      token_hash: "ee".repeat(32),
+      status: "active",
+      created_by: "admin",
+      created_at: "2026-11-14T00:00:00.000Z",
+      last_used_at: null,
+      policy_id: "pol_old",
+    });
+    await kv.set("lock:agent:agt_stale", { owner: "dead", expires: Date.now() - 1 });
+    const patched = await store.patchAgent("agt_stale", { status: "revoked" });
+    assert.equal(patched?.status, "revoked");
   });
 });

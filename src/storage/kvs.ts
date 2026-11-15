@@ -8,25 +8,44 @@ import type {
   PendingAction,
   PolicyRecord,
 } from "../domain/records.ts";
-import { auditMatches, type AuditQuery, type PendingQuery, type RecordStore } from "./memory.ts";
+import {
+  auditMatches,
+  keepRecent,
+  type AuditQuery,
+  type PendingQuery,
+  type RecordStore,
+} from "./memory.ts";
 
 export type KeyValue = {
   get(key: string): Promise<unknown>;
   set(key: string, value: unknown): Promise<void>;
   create(key: string, value: unknown): Promise<boolean>;
   delete(key: string): Promise<void>;
-  list(prefix: string): Promise<string[]>;
+  list(prefix: string): Promise<Array<{ key: string; value: unknown }>>;
 };
 
 const AGENTS = "index:agents";
 const POLICIES = "index:policies";
+const RECENT = "index:audit-recent";
+const LOCK_TTL_MS = 15_000;
+const LOCK_WAIT_MS = 12_000;
+const LOCK_PAUSE_MS = 50;
 
 export function createKvsStore(kv: KeyValue): RecordStore {
   return {
     async putAgent(agent) {
-      await kv.set(agentKey(agent.id), agent);
-      await kv.set(hashKey(agent.token_hash), agent.id);
-      await addId(kv, AGENTS, agent.id);
+      await writeAgent(kv, agent);
+    },
+    async patchAgent(id, patch) {
+      return withLock(kv, `lock:agent:${id}`, async () => {
+        const found = await readRecord<AgentRecord>(kv, agentKey(id));
+        if (!found) {
+          return null;
+        }
+        const next = { ...found, ...patch };
+        await writeAgent(kv, next);
+        return next;
+      });
     },
     async getAgent(id) {
       return readRecord<AgentRecord>(kv, agentKey(id));
@@ -56,18 +75,35 @@ export function createKvsStore(kv: KeyValue): RecordStore {
     async appendAudit(input) {
       const event = auditFrom(input);
       await kv.set(auditKey(event.id), event);
+      await noteRecent(kv, event);
+      await noteUse(kv, event);
       return event;
     },
     async listAudits(query) {
-      const keys = await kv.list("audit:");
+      const rows = await kv.list("audit:");
       const records: AuditEvent[] = [];
-      for (const key of keys) {
-        const event = await readRecord<AuditEvent>(kv, key);
+      for (const row of rows) {
+        const event = row.value as AuditEvent | null | undefined;
         if (event && matchesAudit(event, query)) {
           records.push(event);
         }
       }
       return records;
+    },
+    async recentAudits() {
+      const ids = await readRecent(kv);
+      const records: AuditEvent[] = [];
+      for (const id of ids) {
+        const event = await readRecord<AuditEvent>(kv, auditKey(id));
+        if (event) {
+          records.push(event);
+        }
+      }
+      return records;
+    },
+    async lastUse(agentId) {
+      const value = await kv.get(useKey(agentId));
+      return typeof value === "string" ? value : null;
     },
     async createPending(input) {
       const action = pendingFrom(input);
@@ -78,10 +114,10 @@ export function createKvsStore(kv: KeyValue): RecordStore {
       return readRecord<PendingAction>(kv, pendingKey(id));
     },
     async listPending(query) {
-      const keys = await kv.list("pending:");
+      const rows = await kv.list("pending:");
       const actions: PendingAction[] = [];
-      for (const key of keys) {
-        const action = await readRecord<PendingAction>(kv, key);
+      for (const row of rows) {
+        const action = row.value as PendingAction | null | undefined;
         if (action && (query?.status === undefined || action.status === query.status)) {
           actions.push(action);
         }
@@ -162,6 +198,46 @@ function auditKey(id: string): string {
   return `audit:${id}`;
 }
 
+function useKey(agentId: string): string {
+  return `use:${agentId}`;
+}
+
+async function noteRecent(kv: KeyValue, event: AuditEvent): Promise<void> {
+  await withLock(kv, `lock:${RECENT}`, async () => {
+    const rows = await readRecentRows(kv);
+    await kv.set(RECENT, keepRecent(rows, { id: event.id, ts: event.ts }));
+  });
+}
+
+async function noteUse(kv: KeyValue, event: AuditEvent): Promise<void> {
+  const key = useKey(event.agentId);
+  const current = await kv.get(key);
+  if (typeof current === "string" && current >= event.ts) {
+    return;
+  }
+  await kv.set(key, event.ts);
+}
+
+async function readRecent(kv: KeyValue): Promise<string[]> {
+  const rows = await readRecentRows(kv);
+  return rows.map((row) => row.id);
+}
+
+async function readRecentRows(kv: KeyValue): Promise<Array<{ id: string; ts: string }>> {
+  const value = await kv.get(RECENT);
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter(
+    (item): item is { id: string; ts: string } =>
+      !!item &&
+      typeof item === "object" &&
+      !Array.isArray(item) &&
+      typeof (item as { id?: unknown }).id === "string" &&
+      typeof (item as { ts?: unknown }).ts === "string",
+  );
+}
+
 function pendingKey(id: string): string {
   return `pending:${id}`;
 }
@@ -202,12 +278,61 @@ function pendingFrom(input: NewPending): PendingAction {
   };
 }
 
+async function writeAgent(kv: KeyValue, agent: AgentRecord): Promise<void> {
+  await addId(kv, AGENTS, agent.id);
+  await kv.set(agentKey(agent.id), agent);
+  await kv.set(hashKey(agent.token_hash), agent.id);
+}
+
 async function addId(kv: KeyValue, index: string, id: string): Promise<void> {
-  const ids = await readIds(kv, index);
-  if (ids.includes(id)) {
-    return;
+  await withLock(kv, `lock:${index}`, async () => {
+    const ids = await readIds(kv, index);
+    if (!ids.includes(id)) {
+      await kv.set(index, [...ids, id]);
+    }
+  });
+}
+
+async function withLock<T>(kv: KeyValue, lock: string, body: () => Promise<T>): Promise<T> {
+  const owner = randomBytes(8).toString("hex");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    if (await takeLock(kv, lock, owner)) {
+      try {
+        return await body();
+      } finally {
+        const current = await kv.get(lock);
+        if (isLock(current) && current.owner === owner) {
+          await kv.delete(lock);
+        }
+      }
+    }
+    if (Date.now() > deadline) {
+      throw new Error("update lost");
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOCK_PAUSE_MS));
   }
-  await kv.set(index, [...ids, id]);
+}
+
+async function takeLock(kv: KeyValue, lock: string, owner: string): Promise<boolean> {
+  const record = { owner, expires: Date.now() + LOCK_TTL_MS };
+  if (await kv.create(lock, record)) {
+    return true;
+  }
+  const current = await kv.get(lock);
+  if (isLock(current) && current.expires > Date.now()) {
+    return false;
+  }
+  await kv.delete(lock);
+  return kv.create(lock, record);
+}
+
+function isLock(value: unknown): value is { owner: string; expires: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as { owner?: unknown; expires?: unknown };
+  return typeof record.owner === "string" && typeof record.expires === "number";
 }
 
 async function readIds(kv: KeyValue, index: string): Promise<string[]> {

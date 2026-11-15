@@ -1,4 +1,4 @@
-import type { FieldDiff, Json, PolicyRecord, WriteMode } from "../domain/records.ts";
+import { isProjectKey, type FieldDiff, type Json, type PolicyRecord, type WriteMode } from "../domain/records.ts";
 import { resolveToken } from "../auth/token.ts";
 import type { RecordStore } from "../storage/memory.ts";
 
@@ -14,8 +14,6 @@ const PROJECT_DENIAL =
   "Denied: that issue is not available to this agent. Use jira_search_issues to find issues you can access.";
 
 const AUTH_DENIAL = "401: missing, invalid or revoked agent token.";
-
-const PROJECT_KEY = /^[A-Z][A-Z0-9_]+$/;
 
 export type Decision =
   | { kind: "allow" }
@@ -35,7 +33,7 @@ export type DecisionRequest = {
 };
 
 export function searchProjectJql(policy: PolicyRecord): string {
-  const keys = policy.allowedProjects.filter((key) => PROJECT_KEY.test(key));
+  const keys = policy.allowedProjects.filter((key) => isProjectKey(key));
   if (keys.length === 0) {
     return "id = 0";
   }
@@ -98,10 +96,10 @@ function fieldProject(fields: Record<string, Json> | undefined): string | null |
   }
   const value = fields.project;
   if (typeof value === "string") {
-    return PROJECT_KEY.test(value) ? value : "deny";
+    return isProjectKey(value) ? value : "deny";
   }
   if (value && typeof value === "object" && !Array.isArray(value) && typeof value.key === "string") {
-    return PROJECT_KEY.test(value.key) ? value.key : "deny";
+    return isProjectKey(value.key) ? value.key : "deny";
   }
   return "deny";
 }
