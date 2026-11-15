@@ -20,6 +20,9 @@ export type KeyValue = {
 
 const AGENTS = "index:agents";
 const POLICIES = "index:policies";
+const LOCK_TTL_MS = 15_000;
+const LOCK_WAIT_MS = 12_000;
+const LOCK_PAUSE_MS = 50;
 
 export function createKvsStore(kv: KeyValue): RecordStore {
   return {
@@ -212,9 +215,9 @@ function pendingFrom(input: NewPending): PendingAction {
 }
 
 async function writeAgent(kv: KeyValue, agent: AgentRecord): Promise<void> {
+  await addId(kv, AGENTS, agent.id);
   await kv.set(agentKey(agent.id), agent);
   await kv.set(hashKey(agent.token_hash), agent.id);
-  await addId(kv, AGENTS, agent.id);
 }
 
 async function addId(kv: KeyValue, index: string, id: string): Promise<void> {
@@ -227,17 +230,45 @@ async function addId(kv: KeyValue, index: string, id: string): Promise<void> {
 }
 
 async function withLock<T>(kv: KeyValue, lock: string, body: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (await kv.create(lock, { lock })) {
+  const owner = randomBytes(8).toString("hex");
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    if (await takeLock(kv, lock, owner)) {
       try {
         return await body();
       } finally {
-        await kv.delete(lock);
+        const current = await kv.get(lock);
+        if (isLock(current) && current.owner === owner) {
+          await kv.delete(lock);
+        }
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (Date.now() > deadline) {
+      throw new Error("update lost");
+    }
+    await new Promise((resolve) => setTimeout(resolve, LOCK_PAUSE_MS));
   }
-  throw new Error("update lost");
+}
+
+async function takeLock(kv: KeyValue, lock: string, owner: string): Promise<boolean> {
+  const record = { owner, expires: Date.now() + LOCK_TTL_MS };
+  if (await kv.create(lock, record)) {
+    return true;
+  }
+  const current = await kv.get(lock);
+  if (isLock(current) && current.expires > Date.now()) {
+    return false;
+  }
+  await kv.delete(lock);
+  return kv.create(lock, record);
+}
+
+function isLock(value: unknown): value is { owner: string; expires: number } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as { owner?: unknown; expires?: unknown };
+  return typeof record.owner === "string" && typeof record.expires === "number";
 }
 
 async function readIds(kv: KeyValue, index: string): Promise<string[]> {

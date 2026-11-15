@@ -190,4 +190,23 @@ describe("kvs store", () => {
     const ids = (await store.listAgents()).map((agent) => agent.id).sort();
     assert.deepEqual(ids, ["agt_a", "agt_b"]);
   });
+
+  it("replaces an expired agent lock", async () => {
+    const kv = memoryKv();
+    const store = createKvsStore(kv);
+    await store.putAgent({
+      id: "agt_stale",
+      name: "stale",
+      description: "",
+      token_hash: "ee".repeat(32),
+      status: "active",
+      created_by: "admin",
+      created_at: "2026-11-14T00:00:00.000Z",
+      last_used_at: null,
+      policy_id: "pol_old",
+    });
+    await kv.set("lock:agent:agt_stale", { owner: "dead", expires: Date.now() - 1 });
+    const patched = await store.patchAgent("agt_stale", { status: "revoked" });
+    assert.equal(patched?.status, "revoked");
+  });
 });
